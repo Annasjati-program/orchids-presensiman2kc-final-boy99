@@ -1,0 +1,646 @@
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useToast } from "@/hooks/use-toast";
+import { User, Save, Camera, Upload, Phone, MapPin, Calendar as CalendarIcon, FileText, Trash2, Lock, UserCircle } from "lucide-react";
+import { PageHeader } from "@/components/common/PageHeader";
+import { opfsStorage } from "@/lib/opfsStorage";
+import { supabase } from "@/lib/supabase";
+
+interface UserProfile {
+  id?: string;
+  nama: string;
+  email: string;
+  username?: string;
+  avatar_url?: string;
+  telepon?: string;
+  alamat?: string;
+  tanggal_lahir?: string;
+  tempat_lahir?: string;
+  bio?: string;
+  jenis_kelamin?: 'Laki-laki' | 'Perempuan';
+}
+
+const Profil = () => {
+  const [profile, setProfile] = useState<UserProfile>({
+    nama: "",
+    email: "",
+    username: "",
+    telepon: "",
+    alamat: "",
+    tanggal_lahir: "",
+    tempat_lahir: "",
+    bio: "",
+    jenis_kelamin: undefined,
+    avatar_url: ""
+  });
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const { toast } = useToast();
+
+  useEffect(() => {
+    loadProfile();
+    
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const loadProfile = async () => {
+    try {
+      if (navigator.onLine) {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .limit(1)
+          .single();
+
+        if (data && !error) {
+          const profileData = {
+            id: data.id,
+            nama: data.nama || '',
+            email: data.email || '',
+            username: data.username || '',
+            telepon: data.telepon || '',
+            alamat: data.alamat || '',
+            tanggal_lahir: data.tanggal_lahir || '',
+            tempat_lahir: data.tempat_lahir || '',
+            bio: data.bio || '',
+            jenis_kelamin: data.jenis_kelamin || undefined,
+            avatar_url: data.avatar_url || ''
+          };
+
+          setProfile(profileData);
+          localStorage.setItem('userProfile', JSON.stringify(profileData));
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Error loading from Supabase:', error);
+    }
+
+    const savedProfile = localStorage.getItem('userProfile');
+    if (savedProfile) {
+      try {
+        const parsed = JSON.parse(savedProfile);
+        setProfile(parsed);
+      } catch (error) {
+        console.error('Error loading profile:', error);
+      }
+    }
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      if (!profile.nama || profile.nama.trim() === '') {
+        toast({
+          title: "Error",
+          description: "Nama harus diisi",
+          variant: "destructive"
+        });
+        setIsSaving(false);
+        return;
+      }
+
+      if (newPassword || confirmPassword) {
+        if (newPassword !== confirmPassword) {
+          toast({
+            title: "Error",
+            description: "Password dan konfirmasi password tidak sama",
+            variant: "destructive"
+          });
+          setIsSaving(false);
+          return;
+        }
+
+        if (newPassword.length < 6) {
+          toast({
+            title: "Error",
+            description: "Password minimal 6 karakter",
+            variant: "destructive"
+          });
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      localStorage.setItem('userProfile', JSON.stringify(profile));
+      
+      if (navigator.onLine) {
+        const profileData = {
+          nama: profile.nama,
+          email: profile.email || null,
+          username: profile.username || null,
+          telepon: profile.telepon || null,
+          alamat: profile.alamat || null,
+          tanggal_lahir: profile.tanggal_lahir || null,
+          tempat_lahir: profile.tempat_lahir || null,
+          bio: profile.bio || null,
+          jenis_kelamin: profile.jenis_kelamin || null,
+          avatar_url: profile.avatar_url || null
+        };
+
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .limit(1)
+          .single();
+
+        if (existingProfile) {
+          const updateData: any = {
+            ...profileData,
+            updated_at: new Date().toISOString()
+          };
+
+          if (newPassword) {
+            updateData.password_hash = newPassword;
+          }
+
+          const { error } = await supabase
+            .from('profiles')
+            .update(updateData)
+            .eq('id', existingProfile.id);
+
+          if (error) throw error;
+          
+          setProfile(prev => ({ ...prev, id: existingProfile.id }));
+        } else {
+          const insertData: any = profileData;
+          if (newPassword) {
+            insertData.password_hash = newPassword;
+          }
+
+          const { data, error } = await supabase
+            .from('profiles')
+            .insert([insertData])
+            .select()
+            .single();
+
+          if (error) throw error;
+          if (data) {
+            setProfile(prev => ({ ...prev, id: data.id }));
+            localStorage.setItem('userProfile', JSON.stringify({ ...profile, id: data.id }));
+          }
+        }
+      }
+      
+      setIsEditing(false);
+      setNewPassword("");
+      setConfirmPassword("");
+      
+      window.dispatchEvent(new Event('profileUpdated'));
+      
+      toast({
+        variant: "success",
+        title: "Berhasil",
+        description: isOnline ? "Profil berhasil diperbarui dan disinkronkan ke cloud" : "Profil berhasil diperbarui (offline)"
+      });
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      toast({
+        title: "Error",
+        description: "Gagal menyimpan profil",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast({
+        title: "Error",
+        description: "Ukuran file maksimal 2MB",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast({
+        title: "Error",
+        description: "File harus berupa gambar",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+    try {
+      if (!navigator.onLine) {
+        toast({
+          title: "Offline",
+          description: "Tidak dapat upload foto saat offline",
+          variant: "destructive"
+        });
+        setIsUploadingAvatar(false);
+        return;
+      }
+
+      const userId = profile.id || 'default-user';
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${userId}-${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      if (profile.avatar_url) {
+        const oldPath = profile.avatar_url.split('/').pop();
+        if (oldPath) {
+          await supabase.storage.from('avatars').remove([oldPath]);
+        }
+      }
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      const updatedProfile = { ...profile, avatar_url: publicUrl };
+      setProfile(updatedProfile);
+      localStorage.setItem('userProfile', JSON.stringify(updatedProfile));
+
+      if (profile.id) {
+        await supabase
+          .from('profiles')
+          .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
+          .eq('id', profile.id);
+      }
+
+      window.dispatchEvent(new Event('profileUpdated'));
+      
+      toast({
+        variant: "success",
+        title: "Berhasil",
+        description: "Foto profil berhasil diperbarui dan tersinkron di semua perangkat"
+      });
+      
+      setIsUploadingAvatar(false);
+    } catch (error) {
+      console.error('Error uploading avatar:', error);
+      toast({
+        title: "Error",
+        description: "Gagal mengunggah foto profil",
+        variant: "destructive"
+      });
+      setIsUploadingAvatar(false);
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleDeleteAvatar = async () => {
+    try {
+      if (profile.avatar_url && navigator.onLine) {
+        const filePath = profile.avatar_url.split('/').pop();
+        if (filePath && !profile.avatar_url.startsWith('data:')) {
+          await supabase.storage.from('avatars').remove([filePath]);
+        }
+      }
+
+      const updatedProfile = { ...profile, avatar_url: '' };
+      setProfile(updatedProfile);
+      localStorage.setItem('userProfile', JSON.stringify(updatedProfile));
+
+      if (profile.id && navigator.onLine) {
+        await supabase
+          .from('profiles')
+          .update({ avatar_url: null, updated_at: new Date().toISOString() })
+          .eq('id', profile.id);
+      }
+
+      window.dispatchEvent(new Event('profileUpdated'));
+      
+      toast({
+        variant: "success",
+        title: "Berhasil",
+        description: "Foto profil berhasil dihapus"
+      });
+    } catch (error) {
+      console.error('Error deleting avatar:', error);
+      toast({
+        title: "Error",
+        description: "Gagal menghapus foto profil",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleCancel = () => {
+    loadProfile();
+    setIsEditing(false);
+    setNewPassword("");
+    setConfirmPassword("");
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader 
+        title="Profil" 
+        description="Kelola informasi profil Anda"
+      />
+
+      <div className="grid gap-6 max-w-2xl">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <User className="h-5 w-5" />
+              Informasi Profil
+            </CardTitle>
+            <CardDescription>
+              Kelola informasi dasar profil Anda
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Avatar Section */}
+            <div className="flex items-center gap-4 p-4 border rounded-lg">
+              <Avatar className="h-20 w-20 border-2 border-primary">
+                <AvatarImage 
+                  src={profile.avatar_url || undefined}
+                  onError={(e) => e.currentTarget.src = ''}
+                />
+                <AvatarFallback className="text-lg">
+                  {profile.nama ? profile.nama.split(' ').map(n => n[0]).join('').toUpperCase() : 'U'}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1">
+                <h3 className="font-semibold">Foto Profil</h3>
+                <p className="text-sm text-muted-foreground mb-2">
+                  Upload foto profil Anda (JPG, PNG, maksimal 2MB)
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isUploadingAvatar}
+                    onClick={() => document.getElementById('avatar-upload')?.click()}
+                  >
+                    {isUploadingAvatar ? (
+                      <>
+                        <Upload className="mr-2 h-3 w-3 animate-spin" />
+                        Uploading...
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="mr-2 h-3 w-3" />
+                        Upload Foto
+                      </>
+                    )}
+                  </Button>
+                  {profile.avatar_url && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isUploadingAvatar}
+                      onClick={handleDeleteAvatar}
+                    >
+                      <Trash2 className="mr-2 h-3 w-3" />
+                      Hapus
+                    </Button>
+                  )}
+                  <input
+                    id="avatar-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleAvatarUpload}
+                    className="hidden"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="nama">Nama Lengkap</Label>
+                  <Input
+                    id="nama"
+                    value={profile.nama}
+                    onChange={(e) => setProfile(prev => ({ ...prev, nama: e.target.value }))}
+                    disabled={!isEditing}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    value={profile.email}
+                    onChange={(e) => setProfile(prev => ({ ...prev, email: e.target.value }))}
+                    disabled={!isEditing}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="username">Username</Label>
+                <div className="relative">
+                  <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="username"
+                    placeholder="username"
+                    value={profile.username || ""}
+                    onChange={(e) => setProfile(prev => ({ ...prev, username: e.target.value }))}
+                    disabled={!isEditing}
+                    className="pl-10"
+                  />
+                </div>
+              </div>
+
+              {isEditing && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 border rounded-lg bg-muted/30">
+                  <div className="space-y-2">
+                    <Label htmlFor="newPassword">Password Baru</Label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        id="newPassword"
+                        type="password"
+                        placeholder="Minimal 6 karakter"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Kosongkan jika tidak ingin mengubah password</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="confirmPassword">Konfirmasi Password</Label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        id="confirmPassword"
+                        type="password"
+                        placeholder="Konfirmasi password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="telepon">Nomor Telepon</Label>
+                  <div className="relative">
+                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="telepon"
+                      type="tel"
+                      placeholder="08xxxxxxxxxx"
+                      value={profile.telepon || ""}
+                      onChange={(e) => setProfile(prev => ({ ...prev, telepon: e.target.value }))}
+                      disabled={!isEditing}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+
+              <div className="space-y-2">
+                <Label>Jenis Kelamin</Label>
+                <Select
+                  value={profile.jenis_kelamin || ""}
+                  onValueChange={(value) => setProfile(prev => ({ ...prev, jenis_kelamin: value as 'Laki-laki' | 'Perempuan' }))}
+                  disabled={!isEditing}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Pilih jenis kelamin" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Laki-laki">Laki-laki</SelectItem>
+                    <SelectItem value="Perempuan">Perempuan</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="tempat_lahir">Tempat Lahir</Label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="tempat_lahir"
+                      placeholder="Jakarta"
+                      value={profile.tempat_lahir || ""}
+                      onChange={(e) => setProfile(prev => ({ ...prev, tempat_lahir: e.target.value }))}
+                      disabled={!isEditing}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="tanggal_lahir">Tanggal Lahir</Label>
+                  <div className="relative">
+                    <CalendarIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="tanggal_lahir"
+                      type="date"
+                      value={profile.tanggal_lahir || ""}
+                      onChange={(e) => setProfile(prev => ({ ...prev, tanggal_lahir: e.target.value }))}
+                      disabled={!isEditing}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="alamat">Alamat</Label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Textarea
+                    id="alamat"
+                    placeholder="Masukkan alamat lengkap"
+                    value={profile.alamat || ""}
+                    onChange={(e) => setProfile(prev => ({ ...prev, alamat: e.target.value }))}
+                    disabled={!isEditing}
+                    className="pl-10 min-h-20"
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="bio">Bio / Deskripsi</Label>
+                <div className="relative">
+                  <FileText className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Textarea
+                    id="bio"
+                    placeholder="Ceritakan tentang diri Anda"
+                    value={profile.bio || ""}
+                    onChange={(e) => setProfile(prev => ({ ...prev, bio: e.target.value }))}
+                    disabled={!isEditing}
+                    className="pl-10 min-h-24"
+                    rows={4}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-4">
+              {!isEditing ? (
+                <Button onClick={() => setIsEditing(true)}>
+                  Edit Profil
+                </Button>
+              ) : (
+                <>
+                  <Button onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? (
+                      <>
+                        <Save className="mr-2 h-4 w-4 animate-spin" />
+                        Menyimpan...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="mr-2 h-4 w-4" />
+                        Simpan
+                      </>
+                    )}
+                  </Button>
+                  <Button variant="outline" onClick={handleCancel}>
+                    Batal
+                  </Button>
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+export default Profil;

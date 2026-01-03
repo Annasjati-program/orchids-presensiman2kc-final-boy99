@@ -1,0 +1,890 @@
+import React, { useState, useEffect } from 'react';
+import { PageHeader } from '@/components/common/PageHeader';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { useToast } from '@/hooks/use-toast';
+import { Upload, Save, FileText, Calendar, BookOpen } from 'lucide-react';
+import { PDFPreview } from '@/components/common/PDFPreview';
+import { supabase } from '@/supabase/client';
+import { toast as sonnerToast } from 'sonner';
+
+interface PDFFormatSettings {
+  schoolInfo: {
+    name: string;
+    address: string;
+    phone: string;
+    email: string;
+    logo?: string;
+    signatureLocation?: string;
+  };
+  defaultTeacher: {
+    name: string;
+    nip: string;
+    subject: string;
+    jabatan_sekolah: string;
+    jabatan_kepegawaian: string;
+    satuan_kerja: string;
+    kepala_sekolah_nama: string;
+    kepala_sekolah_nip: string;
+  };
+  tableSettings: {
+    rowHeight: number;
+  };
+  attendanceFormat: {
+    showHeader: boolean;
+    showLogo: boolean;
+    showDate: boolean;
+    showSignature: boolean;
+    headerColor: string;
+    orientation: 'portrait' | 'landscape';
+  };
+  gradeFormat: {
+    showHeader: boolean;
+    showLogo: boolean;
+    showDate: boolean;
+    showSignature: boolean;
+    headerColor: string;
+    orientation: 'portrait' | 'landscape';
+  };
+  journalFormat: {
+    showHeader: boolean;
+    showLogo: boolean;
+    showDate: boolean;
+    showSignature: boolean;
+    headerColor: string;
+    orientation: 'portrait' | 'landscape';
+  };
+}
+
+const FormatPDF: React.FC = () => {
+  const { toast } = useToast();
+  
+  // Load settings from Supabase on component mount
+  const loadSettings = async (): Promise<PDFFormatSettings> => {
+    try {
+      const { data, error } = await supabase
+        .from('pdf_format_settings')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+
+      if (data) {
+        const loadedSettings = {
+          schoolInfo: {
+            name: data.school_name || 'Sistem Informasi Sekolah',
+            address: data.school_address || 'Jl. Pendidikan No. 123, Kota Pendidikan',
+            phone: data.school_phone || '(021) 1234-5678',
+            email: data.school_email || 'info@sekolah.ac.id',
+            logo: data.school_logo,
+            signatureLocation: data.signature_location || 'Jakarta',
+          },
+          defaultTeacher: {
+            name: data.teacher_name || '',
+            nip: data.teacher_nip || '',
+            subject: data.teacher_subject || '',
+            jabatan_sekolah: data.teacher_jabatan_sekolah || '',
+            jabatan_kepegawaian: data.teacher_jabatan_kepegawaian || '',
+            satuan_kerja: data.teacher_satuan_kerja || '',
+            kepala_sekolah_nama: data.teacher_kepala_sekolah_nama || '',
+            kepala_sekolah_nip: data.teacher_kepala_sekolah_nip || '',
+          },
+          tableSettings: {
+            rowHeight: data.table_row_height || 8,
+          },
+          attendanceFormat: {
+            showHeader: data.attendance_show_header ?? true,
+            showLogo: data.attendance_show_logo ?? true,
+            showDate: data.attendance_show_date ?? true,
+            showSignature: data.attendance_show_signature ?? true,
+            headerColor: data.attendance_header_color || '#22c55e',
+            orientation: (data.attendance_orientation || 'portrait') as 'portrait' | 'landscape',
+          },
+          gradeFormat: {
+            showHeader: data.grade_show_header ?? true,
+            showLogo: data.grade_show_logo ?? true,
+            showDate: data.grade_show_date ?? true,
+            showSignature: data.grade_show_signature ?? true,
+            headerColor: data.grade_header_color || '#a855f7',
+            orientation: (data.grade_orientation || 'portrait') as 'portrait' | 'landscape',
+          },
+          journalFormat: {
+            showHeader: data.journal_show_header ?? true,
+            showLogo: data.journal_show_logo ?? true,
+            showDate: data.journal_show_date ?? true,
+            showSignature: data.journal_show_signature ?? true,
+            headerColor: data.journal_header_color || '#3b82f6',
+            orientation: (data.journal_orientation || 'portrait') as 'portrait' | 'landscape',
+          },
+        };
+        
+        localStorage.setItem('pdfFormatSettings', JSON.stringify(loadedSettings));
+        return loadedSettings;
+      }
+    } catch (error) {
+      console.error('Error loading PDF format settings from Supabase:', error);
+      
+      const localSettings = localStorage.getItem('pdfFormatSettings');
+      if (localSettings) {
+        console.log('Falling back to localStorage settings');
+        return JSON.parse(localSettings);
+      }
+    }
+    
+    const defaultSettings = {
+      schoolInfo: {
+        name: 'Sistem Informasi Sekolah',
+        address: 'Jl. Pendidikan No. 123, Kota Pendidikan',
+        phone: '(021) 1234-5678',
+        email: 'info@sekolah.ac.id',
+        signatureLocation: 'Jakarta',
+      },
+      defaultTeacher: {
+        name: '',
+        nip: '',
+        subject: '',
+        jabatan_sekolah: '',
+        jabatan_kepegawaian: '',
+        satuan_kerja: '',
+        kepala_sekolah_nama: '',
+        kepala_sekolah_nip: '',
+      },
+      tableSettings: {
+        rowHeight: 8,
+      },
+      attendanceFormat: {
+        showHeader: true,
+        showLogo: true,
+        showDate: true,
+        showSignature: true,
+        headerColor: '#22c55e',
+        orientation: 'portrait' as 'portrait' | 'landscape',
+      },
+      gradeFormat: {
+        showHeader: true,
+        showLogo: true,
+        showDate: true,
+        showSignature: true,
+        headerColor: '#a855f7',
+        orientation: 'portrait' as 'portrait' | 'landscape',
+      },
+      journalFormat: {
+        showHeader: true,
+        showLogo: true,
+        showDate: true,
+        showSignature: true,
+        headerColor: '#3b82f6',
+        orientation: 'portrait' as 'portrait' | 'landscape',
+      },
+    };
+    
+    return defaultSettings;
+  };
+
+  const [settings, setSettings] = useState<PDFFormatSettings>({
+    schoolInfo: {
+      name: 'Sistem Informasi Sekolah',
+      address: 'Jl. Pendidikan No. 123, Kota Pendidikan',
+      phone: '(021) 1234-5678',
+      email: 'info@sekolah.ac.id',
+      signatureLocation: 'Jakarta',
+    },
+    defaultTeacher: {
+      name: '',
+      nip: '',
+      subject: '',
+      jabatan_sekolah: '',
+      jabatan_kepegawaian: '',
+      satuan_kerja: '',
+      kepala_sekolah_nama: '',
+      kepala_sekolah_nip: '',
+    },
+    tableSettings: {
+      rowHeight: 8,
+    },
+    attendanceFormat: {
+      showHeader: true,
+      showLogo: true,
+      showDate: true,
+      showSignature: true,
+      headerColor: '#22c55e',
+      orientation: 'portrait',
+    },
+    gradeFormat: {
+      showHeader: true,
+      showLogo: true,
+      showDate: true,
+      showSignature: true,
+      headerColor: '#a855f7',
+      orientation: 'portrait',
+    },
+    journalFormat: {
+      showHeader: true,
+      showLogo: true,
+      showDate: true,
+      showSignature: true,
+      headerColor: '#3b82f6',
+      orientation: 'portrait',
+    },
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      const loadedSettings = await loadSettings();
+      setSettings(loadedSettings);
+      setLoading(false);
+    };
+    fetchSettings();
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      const { data: existingData } = await supabase
+        .from('pdf_format_settings')
+        .select('id')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      const payload = {
+        school_name: settings.schoolInfo.name,
+        school_address: settings.schoolInfo.address,
+        school_phone: settings.schoolInfo.phone,
+        school_email: settings.schoolInfo.email,
+        school_logo: settings.schoolInfo.logo,
+        signature_location: settings.schoolInfo.signatureLocation,
+        teacher_name: settings.defaultTeacher.name,
+        teacher_nip: settings.defaultTeacher.nip,
+        teacher_subject: settings.defaultTeacher.subject,
+        teacher_jabatan_sekolah: settings.defaultTeacher.jabatan_sekolah,
+        teacher_jabatan_kepegawaian: settings.defaultTeacher.jabatan_kepegawaian,
+        teacher_satuan_kerja: settings.defaultTeacher.satuan_kerja,
+        teacher_kepala_sekolah_nama: settings.defaultTeacher.kepala_sekolah_nama,
+        teacher_kepala_sekolah_nip: settings.defaultTeacher.kepala_sekolah_nip,
+        table_row_height: settings.tableSettings.rowHeight,
+        attendance_show_header: settings.attendanceFormat.showHeader,
+        attendance_show_logo: settings.attendanceFormat.showLogo,
+        attendance_show_date: settings.attendanceFormat.showDate,
+        attendance_show_signature: settings.attendanceFormat.showSignature,
+        attendance_header_color: settings.attendanceFormat.headerColor,
+        attendance_orientation: settings.attendanceFormat.orientation,
+        grade_show_header: settings.gradeFormat.showHeader,
+        grade_show_logo: settings.gradeFormat.showLogo,
+        grade_show_date: settings.gradeFormat.showDate,
+        grade_show_signature: settings.gradeFormat.showSignature,
+        grade_header_color: settings.gradeFormat.headerColor,
+        grade_orientation: settings.gradeFormat.orientation,
+        journal_show_header: settings.journalFormat.showHeader,
+        journal_show_logo: settings.journalFormat.showLogo,
+        journal_show_date: settings.journalFormat.showDate,
+        journal_show_signature: settings.journalFormat.showSignature,
+        journal_header_color: settings.journalFormat.headerColor,
+        journal_orientation: settings.journalFormat.orientation,
+        updated_at: new Date().toISOString(),
+      };
+
+      let error;
+      if (existingData?.id) {
+        const result = await supabase
+          .from('pdf_format_settings')
+          .update(payload)
+          .eq('id', existingData.id);
+        error = result.error;
+      } else {
+        const result = await supabase
+          .from('pdf_format_settings')
+          .insert([payload]);
+        error = result.error;
+      }
+
+      if (error) throw error;
+
+      localStorage.setItem('pdfFormatSettings', JSON.stringify(settings));
+
+      sonnerToast.success('Pengaturan PDF berhasil disimpan!');
+    } catch (error) {
+      console.error('Error saving PDF format settings:', error);
+      sonnerToast.error('Gagal menyimpan pengaturan PDF');
+    }
+  };
+
+  const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSettings(prev => ({
+          ...prev,
+          schoolInfo: {
+            ...prev.schoolInfo,
+            logo: reader.result as string,
+          },
+        }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const FormatTab = ({ 
+    formatType, 
+    format, 
+    icon: Icon, 
+    title 
+  }: { 
+    formatType: keyof Pick<PDFFormatSettings, 'attendanceFormat' | 'gradeFormat' | 'journalFormat'>;
+    format: PDFFormatSettings['attendanceFormat'];
+    icon: React.ElementType;
+    title: string;
+  }) => (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Icon className="h-5 w-5" />
+          {title}
+        </CardTitle>
+        <CardDescription>
+          Atur format khusus untuk laporan {title.toLowerCase()}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>Orientasi Halaman</Label>
+            <Select
+              value={format.orientation}
+              onValueChange={(value: 'portrait' | 'landscape') =>
+                setSettings(prev => ({
+                  ...prev,
+                  [formatType]: { ...prev[formatType], orientation: value },
+                }))
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="portrait">Portrait</SelectItem>
+                <SelectItem value="landscape">Landscape</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          
+          <div className="space-y-2">
+            <Label>Warna Header</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="color"
+                value={format.headerColor}
+                onChange={(e) =>
+                  setSettings(prev => ({
+                    ...prev,
+                    [formatType]: { ...prev[formatType], headerColor: e.target.value },
+                  }))
+                }
+                className="w-20 h-10 cursor-pointer"
+                onClick={(e) => e.stopPropagation()}
+              />
+              <Input
+                type="text"
+                value={format.headerColor}
+                onChange={(e) =>
+                  setSettings(prev => ({
+                    ...prev,
+                    [formatType]: { ...prev[formatType], headerColor: e.target.value },
+                  }))
+                }
+                className="flex-1"
+                placeholder="#000000"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <Label htmlFor={`${formatType}-header`}>Tampilkan Header</Label>
+            <Switch
+              id={`${formatType}-header`}
+              checked={format.showHeader}
+              onCheckedChange={(checked) =>
+                setSettings(prev => ({
+                  ...prev,
+                  [formatType]: { ...prev[formatType], showHeader: checked },
+                }))
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label htmlFor={`${formatType}-logo`}>Tampilkan Logo</Label>
+            <Switch
+              id={`${formatType}-logo`}
+              checked={format.showLogo}
+              onCheckedChange={(checked) =>
+                setSettings(prev => ({
+                  ...prev,
+                  [formatType]: { ...prev[formatType], showLogo: checked },
+                }))
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label htmlFor={`${formatType}-date`}>Tampilkan Tanggal</Label>
+            <Switch
+              id={`${formatType}-date`}
+              checked={format.showDate}
+              onCheckedChange={(checked) =>
+                setSettings(prev => ({
+                  ...prev,
+                  [formatType]: { ...prev[formatType], showDate: checked },
+                }))
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label htmlFor={`${formatType}-signature`}>Tempat Tanda Tangan</Label>
+            <Switch
+              id={`${formatType}-signature`}
+              checked={format.showSignature}
+              onCheckedChange={(checked) =>
+                setSettings(prev => ({
+                  ...prev,
+                  [formatType]: { ...prev[formatType], showSignature: checked },
+                }))
+              }
+            />
+          </div>
+        </div>
+      </CardContent>
+      
+      <PDFPreview 
+        settings={{
+          schoolInfo: settings.schoolInfo,
+          defaultTeacher: settings.defaultTeacher,
+          format: format,
+        }}
+        title={title}
+      />
+    </Card>
+  );
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Format PDF" />
+      
+      <Tabs defaultValue="school" className="space-y-6">
+        <TabsList className="grid w-full grid-cols-6">
+          <TabsTrigger value="school">Info Sekolah</TabsTrigger>
+          <TabsTrigger value="teacher">Data Guru</TabsTrigger>
+          <TabsTrigger value="table">Tabel</TabsTrigger>
+          <TabsTrigger value="attendance">Kehadiran</TabsTrigger>
+          <TabsTrigger value="grades">Penilaian</TabsTrigger>
+          <TabsTrigger value="journal">Jurnal</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="school">
+          <Card>
+            <CardHeader>
+              <CardTitle>Informasi Sekolah</CardTitle>
+              <CardDescription>
+                Atur informasi sekolah yang akan tampil di header laporan PDF
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="school-name">Nama Sekolah</Label>
+                  <Input
+                    id="school-name"
+                    value={settings.schoolInfo.name}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        schoolInfo: { ...prev.schoolInfo, name: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="school-phone">Telepon</Label>
+                  <Input
+                    id="school-phone"
+                    value={settings.schoolInfo.phone}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        schoolInfo: { ...prev.schoolInfo, phone: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="school-email">Email</Label>
+                  <Input
+                    id="school-email"
+                    type="email"
+                    value={settings.schoolInfo.email}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        schoolInfo: { ...prev.schoolInfo, email: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="school-logo">Logo Sekolah</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="school-logo"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      className="hidden"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => document.getElementById('school-logo')?.click()}
+                      className="flex items-center gap-2"
+                    >
+                      <Upload className="h-4 w-4" />
+                      Upload Logo
+                    </Button>
+                    {settings.schoolInfo.logo && (
+                      <img
+                        src={settings.schoolInfo.logo}
+                        alt="Logo"
+                        className="h-10 w-10 object-contain border rounded"
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="signature-location">Lokasi Tanda Tangan</Label>
+                <Input
+                  id="signature-location"
+                  value={settings.schoolInfo.signatureLocation ?? ''}
+                  onChange={(e) =>
+                    setSettings(prev => ({
+                      ...prev,
+                      schoolInfo: { ...prev.schoolInfo, signatureLocation: e.target.value },
+                    }))
+                  }
+                  placeholder="Contoh: Jakarta, Bandung, Surabaya"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Lokasi ini akan muncul di bagian tanda tangan pada PDF
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="school-address">Alamat</Label>
+                <Textarea
+                  id="school-address"
+                  value={settings.schoolInfo.address}
+                  onChange={(e) =>
+                    setSettings(prev => ({
+                      ...prev,
+                      schoolInfo: { ...prev.schoolInfo, address: e.target.value },
+                    }))
+                  }
+                  rows={3}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="teacher">
+          <Card>
+            <CardHeader>
+              <CardTitle>Data Guru & Penandatangan</CardTitle>
+              <CardDescription>
+                Atur data guru dan penandatangan yang akan ditampilkan di laporan
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-name">Nama Guru/Penandatangan</Label>
+                  <Input
+                    id="teacher-name"
+                    placeholder="Masukkan nama lengkap"
+                    value={settings.defaultTeacher.name}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, name: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-nip">NIP</Label>
+                  <Input
+                    id="teacher-nip"
+                    placeholder="Masukkan NIP"
+                    value={settings.defaultTeacher.nip}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, nip: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-subject">Mata Pelajaran</Label>
+                  <Input
+                    id="teacher-subject"
+                    placeholder="Masukkan mata pelajaran"
+                    value={settings.defaultTeacher.subject}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, subject: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-jabatan-sekolah">Jabatan Sekolah</Label>
+                  <Input
+                    id="teacher-jabatan-sekolah"
+                    placeholder="Contoh: Guru Mata Pelajaran"
+                    value={settings.defaultTeacher.jabatan_sekolah}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, jabatan_sekolah: e.target.value },
+                      }))
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Digunakan untuk tanda tangan di PDF
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-jabatan-kepegawaian">Jabatan Kepegawaian</Label>
+                  <Input
+                    id="teacher-jabatan-kepegawaian"
+                    placeholder="Contoh: Guru Ahli Pertama"
+                    value={settings.defaultTeacher.jabatan_kepegawaian}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, jabatan_kepegawaian: e.target.value },
+                      }))
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Digunakan untuk informasi di atas tabel laporan jurnal
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="teacher-work-unit">Satuan Kerja</Label>
+                  <Input
+                    id="teacher-work-unit"
+                    placeholder="Misal: SD Negeri 1, SMP Negeri 2, dll"
+                    value={settings.defaultTeacher.satuan_kerja}
+                    onChange={(e) =>
+                      setSettings(prev => ({
+                        ...prev,
+                        defaultTeacher: { ...prev.defaultTeacher, satuan_kerja: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-medium mb-4">Data Kepala Sekolah</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="principal-name">Nama Kepala Sekolah</Label>
+                    <Input
+                      id="principal-name"
+                      placeholder="Masukkan nama kepala sekolah"
+                      value={settings.defaultTeacher.kepala_sekolah_nama}
+                      onChange={(e) =>
+                        setSettings(prev => ({
+                          ...prev,
+                          defaultTeacher: { ...prev.defaultTeacher, kepala_sekolah_nama: e.target.value },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="principal-nip">NIP Kepala Sekolah</Label>
+                    <Input
+                      id="principal-nip"
+                      placeholder="Masukkan NIP kepala sekolah"
+                      value={settings.defaultTeacher.kepala_sekolah_nip}
+                      onChange={(e) =>
+                        setSettings(prev => ({
+                          ...prev,
+                          defaultTeacher: { ...prev.defaultTeacher, kepala_sekolah_nip: e.target.value },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardHeader>
+              <CardTitle>Pengaturan Tanda Tangan</CardTitle>
+              <CardDescription>
+                Konfigurasi siapa yang menandatangani setiap jenis laporan
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-4 border rounded-lg">
+                  <h5 className="font-medium text-sm mb-2">Laporan Kehadiran</h5>
+                  <p className="text-xs text-muted-foreground">
+                    Ditandatangani oleh: <strong>Guru dengan jabatan tertentu</strong> 
+                    (sesuai data guru di atas)
+                  </p>
+                </div>
+                
+                <div className="p-4 border rounded-lg">
+                  <h5 className="font-medium text-sm mb-2">Laporan Penilaian</h5>
+                  <p className="text-xs text-muted-foreground">
+                    Ditandatangani oleh: <strong>Guru dengan jabatan tertentu</strong> 
+                    (sesuai data guru di atas)
+                  </p>
+                </div>
+                
+                <div className="p-4 border rounded-lg">
+                  <h5 className="font-medium text-sm mb-2">Laporan Jurnal</h5>
+                  <p className="text-xs text-muted-foreground">
+                    Ditandatangani oleh: <strong>Pejabat Penilai (Kepala Sekolah)</strong> dan <strong>Pegawai Yang Dinilai (Guru)</strong>
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="table">
+          <Card>
+            <CardHeader>
+              <CardTitle>Pengaturan Tabel</CardTitle>
+              <CardDescription>
+                Atur tampilan tabel pada semua laporan PDF
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-4">
+                <h3 className="font-semibold text-base">Tinggi Baris PDF</h3>
+                <div className="space-y-2">
+                  <Label htmlFor="row-height">Tinggi Baris untuk Cetak PDF</Label>
+                  <div className="flex items-center gap-4">
+                    <Input
+                      id="row-height"
+                      type="number"
+                      min="6"
+                      max="20"
+                      step="1"
+                      value={settings.tableSettings.rowHeight}
+                      onChange={(e) =>
+                        setSettings(prev => ({
+                          ...prev,
+                          tableSettings: { ...prev.tableSettings, rowHeight: Number(e.target.value) },
+                        }))
+                      }
+                      className="w-32"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      Nilai: {settings.tableSettings.rowHeight} (Default: 8)
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Semakin besar nilai, semakin tinggi baris tabel pada PDF yang dicetak. Rentang: 6-20
+                  </p>
+                </div>
+
+                <div className="p-4 bg-muted/50 rounded-lg space-y-2">
+                  <h4 className="font-medium text-sm">Panduan Tinggi Baris PDF:</h4>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    <li>• <strong>6-7</strong>: Baris sangat rapat (untuk data banyak)</li>
+                    <li>• <strong>8-10</strong>: Baris standar (default, direkomendasikan)</li>
+                    <li>• <strong>11-15</strong>: Baris lebih longgar (lebih mudah dibaca)</li>
+                    <li>• <strong>16-20</strong>: Baris sangat longgar (untuk data sedikit)</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="p-4 bg-muted/50 rounded-lg">
+                <p className="text-sm text-muted-foreground">
+                  <strong>Info:</strong> Tinggi baris tabel di aplikasi dapat diatur langsung pada setiap tabel menggunakan menu dropdown yang tersedia di bagian atas tabel.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="attendance">
+          <FormatTab
+            formatType="attendanceFormat"
+            format={settings.attendanceFormat}
+            icon={Calendar}
+            title="Laporan Kehadiran"
+          />
+        </TabsContent>
+
+        <TabsContent value="grades">
+          <FormatTab
+            formatType="gradeFormat"
+            format={settings.gradeFormat}
+            icon={FileText}
+            title="Laporan Penilaian"
+          />
+        </TabsContent>
+
+        <TabsContent value="journal">
+          <FormatTab
+            formatType="journalFormat"
+            format={settings.journalFormat}
+            icon={BookOpen}
+            title="Laporan Jurnal Guru"
+          />
+        </TabsContent>
+      </Tabs>
+
+      <div className="flex justify-end">
+        <Button onClick={handleSave} className="flex items-center gap-2">
+          <Save className="h-4 w-4" />
+          Simpan Pengaturan
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+export default FormatPDF;

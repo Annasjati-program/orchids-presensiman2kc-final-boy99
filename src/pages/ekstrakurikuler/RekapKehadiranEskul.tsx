@@ -1,0 +1,940 @@
+import { useState, useEffect } from "react";
+import { eskulDB } from "@/lib/eskulDB";
+import { Ekstrakurikuler, AnggotaEskul } from "@/lib/indexedDB";
+import { PageHeader } from "@/components/common/PageHeader";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { toast } from "@/hooks/use-toast";
+import { FileText, AlertCircle, Users, BarChart3 } from "lucide-react";
+import { generatePDFBlob, getCustomPDFTemplate } from "@/lib/exportUtils";
+import { ExportDateDialog } from "@/components/common/ExportDateDialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { supabase } from "@/lib/supabase";
+
+const RekapKehadiranEskul = () => {
+  const [eskul, setEskul] = useState<Ekstrakurikuler | null>(null);
+  
+  // Load saved filters from localStorage
+  const getSavedFilters = () => {
+    try {
+      const saved = localStorage.getItem('eskulRekapFilters');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (error) {
+      console.error('Error loading saved filters:', error);
+    }
+    return {
+      startMonth: new Date().getMonth().toString(),
+      endMonth: new Date().getMonth().toString(),
+      selectedYear: new Date().getFullYear().toString()
+    };
+  };
+  
+  const savedFilters = getSavedFilters();
+  const [startMonth, setStartMonth] = useState<string>(savedFilters.startMonth);
+  const [endMonth, setEndMonth] = useState<string>(savedFilters.endMonth);
+  const [selectedYear, setSelectedYear] = useState<string>(savedFilters.selectedYear);
+  const [loading, setLoading] = useState(false);
+  const [isExportDateDialogOpen, setIsExportDateDialogOpen] = useState(false);
+  const [emptyMonths, setEmptyMonths] = useState<string[]>([]);
+  const [showEmptyMonthsDialog, setShowEmptyMonthsDialog] = useState(false);
+  const [availableYears, setAvailableYears] = useState<number[]>([]);
+  const [previewData, setPreviewData] = useState<any[]>([]);
+
+  const monthOptions = [
+    { value: "0", label: "Januari" },
+    { value: "1", label: "Februari" },
+    { value: "2", label: "Maret" },
+    { value: "3", label: "April" },
+    { value: "4", label: "Mei" },
+    { value: "5", label: "Juni" },
+    { value: "6", label: "Juli" },
+    { value: "7", label: "Agustus" },
+    { value: "8", label: "September" },
+    { value: "9", label: "Oktober" },
+    { value: "10", label: "November" },
+    { value: "11", label: "Desember" },
+  ];
+
+  useEffect(() => {
+    loadData();
+    loadAvailableYears();
+  }, []);
+
+  useEffect(() => {
+    if (eskul) {
+      loadPreviewData();
+    }
+  }, [startMonth, endMonth, selectedYear, eskul]);
+
+  // Save filters to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('eskulRekapFilters', JSON.stringify({
+      startMonth,
+      endMonth,
+      selectedYear
+    }));
+  }, [startMonth, endMonth, selectedYear]);
+
+  const loadData = async () => {
+    const eskuls = await eskulDB.select('ekstrakurikuler');
+    if (eskuls.length > 0) {
+      setEskul(eskuls[0]);
+    }
+  };
+
+  const loadAvailableYears = async () => {
+    const allKehadiran = await eskulDB.select("kehadiran_eskul");
+    const years = [...new Set(allKehadiran.map((k: any) => new Date(k.tanggal).getFullYear()))];
+    
+    const currentYear = new Date().getFullYear();
+    for (let i = 0; i <= 3; i++) {
+      const year = currentYear + i;
+      if (!years.includes(year)) {
+        years.push(year);
+      }
+    }
+    
+    setAvailableYears(years.sort((a, b) => a - b));
+  };
+
+  const loadPreviewData = async () => {
+    if (!eskul) return;
+
+    const year = parseInt(selectedYear);
+    const sMonth = parseInt(startMonth);
+    const eMonth = parseInt(endMonth);
+
+    // Get all active members
+    const anggota = await eskulDB.select('anggota_eskul', (a: AnggotaEskul) => 
+      a.ekstrakurikuler_id === eskul.id && a.status === 'aktif'
+    );
+
+    // Get all attendance records in date range
+    const startDate = new Date(year, sMonth, 1);
+    const endDate = new Date(year, eMonth + 1, 0);
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
+
+    // Get from IndexedDB
+    const kehadiranLocal = await eskulDB.select('kehadiran_eskul', (k: any) =>
+      k.ekstrakurikuler_id === eskul.id &&
+      k.tanggal >= startDateStr &&
+      k.tanggal <= endDateStr
+    );
+
+    // Get from Supabase
+    let kehadiranSupabase: any[] = [];
+    try {
+      const { data, error } = await supabase
+        .from('kehadiran_eskul')
+        .select(`
+          *,
+          anggota_eskul!inner(nisn, nama_siswa),
+          ekstrakurikuler!inner(nama_eskul)
+        `)
+        .eq('ekstrakurikuler.nama_eskul', eskul.nama_eskul)
+        .gte('tanggal', startDateStr)
+        .lte('tanggal', endDateStr);
+
+      if (!error && data) {
+        kehadiranSupabase = data.map((item: any) => ({
+          id: item.id,
+          ekstrakurikuler_id: eskul.id,
+          anggota_id: item.anggota_id,
+          tanggal: item.tanggal,
+          status_kehadiran: item.status_kehadiran,
+          keterangan: item.keterangan,
+          _nisn: item.anggota_eskul.nisn
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching from Supabase:', error);
+    }
+
+    // Merge data: combine local and Supabase, remove duplicates
+    const kehadiranMap = new Map();
+    [...kehadiranLocal, ...kehadiranSupabase].forEach((k: any) => {
+      const key = `${k.anggota_id || k._nisn}_${k.tanggal}`;
+      if (!kehadiranMap.has(key)) {
+        kehadiranMap.set(key, k);
+      }
+    });
+    const kehadiran = Array.from(kehadiranMap.values());
+
+    // Get unique dates from attendance records and sort them
+    const uniqueDates = [...new Set(kehadiran.map((k: any) => k.tanggal))].sort();
+
+    // Calculate summary for each member with date-based attendance
+    const summary = anggota.map((member: AnggotaEskul) => {
+      const memberAttendance = kehadiran.filter((k: any) => 
+        k.anggota_id === member.id || k._nisn === member.nisn
+      );
+      
+      const hadir = memberAttendance.filter((k: any) => k.status_kehadiran === 'Hadir').length;
+      const sakit = memberAttendance.filter((k: any) => k.status_kehadiran === 'Sakit').length;
+      const izin = memberAttendance.filter((k: any) => k.status_kehadiran === 'Ijin' || k.status_kehadiran === 'Izin').length;
+      const alpha = memberAttendance.filter((k: any) => k.status_kehadiran === 'Alpha').length;
+      const total = memberAttendance.length;
+      const totalPertemuan = uniqueDates.length;
+      const persentase = totalPertemuan > 0 ? Math.round((hadir / totalPertemuan) * 100) : 0;
+
+      // Create date-based attendance object
+      const dateAttendance: any = {};
+      uniqueDates.forEach(date => {
+        const record = memberAttendance.find((k: any) => k.tanggal === date);
+        dateAttendance[date] = record ? record.status_kehadiran : '-';
+      });
+
+      return {
+        nisn: member.nisn,
+        nama_siswa: member.nama_siswa,
+        tingkat: member.tingkat,
+        nama_kelas: member.nama_kelas,
+        ...dateAttendance,
+        hadir,
+        sakit,
+        izin,
+        alpha,
+        total,
+        persentase,
+        _dates: uniqueDates
+      };
+    });
+
+    setPreviewData(summary);
+  };
+
+  const getStatusSymbol = (status: string) => {
+    switch (status) {
+      case 'Hadir':
+        return <span className="inline-flex items-center justify-center w-8 h-8 bg-green-100 text-green-800 rounded-full text-sm font-bold">H</span>;
+      case 'Sakit':
+        return <span className="inline-flex items-center justify-center w-8 h-8 bg-yellow-100 text-yellow-800 rounded-full text-sm font-bold">S</span>;
+      case 'Izin':
+      case 'Ijin':
+        return <span className="inline-flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-800 rounded-full text-sm font-bold">I</span>;
+      case 'Alpha':
+        return <span className="inline-flex items-center justify-center w-8 h-8 bg-red-100 text-red-800 rounded-full text-sm font-bold">A</span>;
+      default:
+        return <span className="inline-flex items-center justify-center w-8 h-8 bg-gray-100 text-gray-500 rounded-full text-sm">-</span>;
+    }
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return `${date.getDate()}/${date.getMonth() + 1}`;
+  };
+
+  const getStatusBadge = (percentage: number) => {
+    if (percentage >= 90) {
+      return <Badge className="bg-green-100 text-green-800 border-green-200">Sangat Baik</Badge>;
+    } else if (percentage >= 80) {
+      return <Badge className="bg-blue-100 text-blue-800 border-blue-200">Baik</Badge>;
+    } else if (percentage >= 70) {
+      return <Badge className="bg-yellow-100 text-yellow-800 border-yellow-200">Cukup</Badge>;
+    } else {
+      return <Badge className="bg-red-100 text-red-800 border-red-200">Kurang</Badge>;
+    }
+  };
+
+  const checkEmptyMonths = async () => {
+    if (!eskul) return [];
+
+    const year = parseInt(selectedYear);
+    const sMonth = parseInt(startMonth);
+    const eMonth = parseInt(endMonth);
+    const empty: string[] = [];
+
+    for (let monthIndex = sMonth; monthIndex <= eMonth; monthIndex++) {
+      const monthStartDate = new Date(year, monthIndex, 1);
+      const monthEndDate = new Date(year, monthIndex + 1, 0);
+      const monthStartDateStr = monthStartDate.toISOString().split('T')[0];
+      const monthEndDateStr = monthEndDate.toISOString().split('T')[0];
+
+      // Check IndexedDB
+      const kehadiranLocal = await eskulDB.select('kehadiran_eskul', (k: any) =>
+        k.ekstrakurikuler_id === eskul.id &&
+        k.tanggal >= monthStartDateStr &&
+        k.tanggal <= monthEndDateStr
+      );
+
+      // Check Supabase
+      let kehadiranSupabase: any[] = [];
+      try {
+        const { data, error } = await supabase
+          .from('kehadiran_eskul')
+          .select('id')
+          .eq('ekstrakurikuler.nama_eskul', eskul.nama_eskul)
+          .gte('tanggal', monthStartDateStr)
+          .lte('tanggal', monthEndDateStr);
+        
+        if (!error && data) {
+          kehadiranSupabase = data;
+        }
+      } catch (error) {
+        console.error('Error fetching from Supabase:', error);
+      }
+
+      if (kehadiranLocal.length === 0 && kehadiranSupabase.length === 0) {
+        empty.push(monthOptions[monthIndex].label);
+      }
+    }
+
+    return empty;
+  };
+
+  const handleExportClick = async () => {
+    const empty = await checkEmptyMonths();
+    if (empty.length > 0) {
+      setEmptyMonths(empty);
+      setShowEmptyMonthsDialog(true);
+    } else {
+      setIsExportDateDialogOpen(true);
+    }
+  };
+
+  const handleConfirmExport = () => {
+    setShowEmptyMonthsDialog(false);
+    setIsExportDateDialogOpen(true);
+  };
+
+  const handleExportPDF = async (signatureDate?: Date) => {
+    if (!eskul) {
+      toast({
+        title: "Error",
+        description: "Data ekstrakurikuler tidak ditemukan",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (previewData.length === 0) {
+      toast({
+        title: "Tidak ada data",
+        description: "Tidak ada data kehadiran untuk periode yang dipilih",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const jsPDF = (await import('jspdf')).jsPDF;
+      const autoTable = (await import('jspdf-autotable')).default;
+      
+      const template = await getCustomPDFTemplate('attendance');
+      const doc = new jsPDF({
+        orientation: template.layout.orientation,
+        unit: 'mm',
+        format: template.layout.pageSize,
+      });
+
+      const year = parseInt(selectedYear);
+      const sMonth = parseInt(startMonth);
+      const eMonth = parseInt(endMonth);
+
+      // Get all active members
+      const anggota = await eskulDB.select('anggota_eskul', (a: AnggotaEskul) => 
+        a.ekstrakurikuler_id === eskul.id && a.status === 'aktif'
+      );
+
+      let isFirstPage = true;
+      let exportedMonths = 0;
+
+      // Loop through each month in the range
+      for (let monthIndex = sMonth; monthIndex <= eMonth; monthIndex++) {
+        const monthName = monthOptions[monthIndex].label;
+        
+        // Get attendance for this specific month
+        const monthStartDate = new Date(year, monthIndex, 1);
+        const monthEndDate = new Date(year, monthIndex + 1, 0);
+        const monthStartDateStr = monthStartDate.toISOString().split('T')[0];
+        const monthEndDateStr = monthEndDate.toISOString().split('T')[0];
+
+        // Get from IndexedDB
+        const kehadiranLocal = await eskulDB.select('kehadiran_eskul', (k: any) =>
+          k.ekstrakurikuler_id === eskul.id &&
+          k.tanggal >= monthStartDateStr &&
+          k.tanggal <= monthEndDateStr
+        );
+
+        // Get from Supabase
+        let kehadiranSupabase: any[] = [];
+        try {
+          const { data, error } = await supabase
+            .from('kehadiran_eskul')
+            .select(`
+              *,
+              anggota_eskul!inner(nisn, nama_siswa),
+              ekstrakurikuler!inner(nama_eskul)
+            `)
+            .eq('ekstrakurikuler.nama_eskul', eskul.nama_eskul)
+            .gte('tanggal', monthStartDateStr)
+            .lte('tanggal', monthEndDateStr);
+
+          if (!error && data) {
+            kehadiranSupabase = data.map((item: any) => ({
+              id: item.id,
+              ekstrakurikuler_id: eskul.id,
+              anggota_id: item.anggota_id,
+              tanggal: item.tanggal,
+              status_kehadiran: item.status_kehadiran,
+              keterangan: item.keterangan,
+              _nisn: item.anggota_eskul.nisn
+            }));
+          }
+        } catch (error) {
+          console.error('Error fetching from Supabase:', error);
+        }
+
+        // Merge data
+        const kehadiranMap = new Map();
+        [...kehadiranLocal, ...kehadiranSupabase].forEach((k: any) => {
+          const key = `${k.anggota_id || k._nisn}_${k.tanggal}`;
+          if (!kehadiranMap.has(key)) {
+            kehadiranMap.set(key, k);
+          }
+        });
+        const kehadiran = Array.from(kehadiranMap.values());
+
+        // Skip this month if no data
+        if (kehadiran.length === 0) {
+          continue;
+        }
+
+        if (!isFirstPage) {
+          doc.addPage();
+        }
+        isFirstPage = false;
+        exportedMonths++;
+
+
+        // Get unique dates for this month
+        const uniqueDates = [...new Set(kehadiran.map((k: any) => k.tanggal))].sort();
+
+        // Calculate summary for each member for this month
+        const monthData = anggota.map((member: AnggotaEskul) => {
+          const memberAttendance = kehadiran.filter((k: any) => 
+            k.anggota_id === member.id || k._nisn === member.nisn
+          );
+          
+          const hadir = memberAttendance.filter((k: any) => k.status_kehadiran === 'Hadir').length;
+          const sakit = memberAttendance.filter((k: any) => k.status_kehadiran === 'Sakit').length;
+          const izin = memberAttendance.filter((k: any) => k.status_kehadiran === 'Ijin' || k.status_kehadiran === 'Izin').length;
+          const alpha = memberAttendance.filter((k: any) => k.status_kehadiran === 'Alpha').length;
+          const total = memberAttendance.length;
+          const persentase = total > 0 ? ((hadir / total) * 100).toFixed(1) : "0.0";
+
+          // Create date-based attendance object
+          const dateAttendance: any = {};
+          uniqueDates.forEach(date => {
+            const record = memberAttendance.find((k: any) => k.tanggal === date);
+            const status = record ? record.status_kehadiran : '-';
+            const statusShort = status === 'Hadir' ? 'H' : status === 'Sakit' ? 'S' : status === 'Ijin' || status === 'Izin' ? 'I' : status === 'Alpha' ? 'A' : '-';
+            dateAttendance[date] = statusShort;
+          });
+
+          return {
+            nisn: member.nisn,
+            nama_siswa: member.nama_siswa,
+            tingkat: member.tingkat,
+            nama_kelas: member.nama_kelas,
+            ...dateAttendance,
+            hadir,
+            sakit,
+            izin,
+            alpha,
+            total,
+            persentase: `${persentase}%`,
+          };
+        });
+
+        // Create columns for this month
+        const columns = [
+          { key: "no", label: "No" },
+          { key: "nisn", label: "NISN" },
+          { key: "nama_siswa", label: "Nama Siswa" },
+          { key: "tingkat", label: "Tingkat" },
+          { key: "nama_kelas", label: "Kelas" },
+          ...uniqueDates.map((date: string) => ({
+            key: date,
+            label: new Date(date).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit' }),
+          })),
+          { key: "hadir", label: "H" },
+          { key: "sakit", label: "S" },
+          { key: "izin", label: "I" },
+          { key: "alpha", label: "A" },
+          { key: "total", label: "Total" },
+          { key: "persentase", label: "%" },
+        ];
+
+        // Generate PDF content for this month
+        let currentY = template.layout.margins.top;
+        const pageWidth = doc.internal.pageSize.getWidth();
+
+        doc.setFont(template.styling.fontFamily);
+
+        // Title
+        doc.setFontSize(template.styling.fontSize.title);
+        doc.setTextColor(0, 0, 0);
+        const reportTitle = `REKAP KEHADIRAN EKSTRAKURIKULER`;
+        const titleWidth = doc.getTextWidth(reportTitle);
+        doc.text(reportTitle, (pageWidth - titleWidth) / 2, currentY);
+        currentY += 6;
+
+        doc.setFontSize(template.styling.fontSize.subtitle);
+        const eskulName = eskul.nama_eskul.toUpperCase();
+        const eskulWidth = doc.getTextWidth(eskulName);
+        doc.text(eskulName, (pageWidth - eskulWidth) / 2, currentY);
+        currentY += 6;
+
+        const periodText = `Periode ${monthName} ${selectedYear}`;
+        const periodWidth = doc.getTextWidth(periodText);
+        doc.text(periodText, (pageWidth - periodWidth) / 2, currentY);
+        currentY += 10;
+
+        // Info section
+        doc.setFontSize(template.styling.fontSize.header);
+        const labelWidth = 30;
+
+        doc.text('Ekstrakurikuler', template.layout.margins.left, currentY);
+        doc.text(':', template.layout.margins.left + labelWidth, currentY);
+        doc.text(eskul.nama_eskul, template.layout.margins.left + labelWidth + 3, currentY);
+        currentY += 5;
+
+        doc.text('Pembimbing', template.layout.margins.left, currentY);
+        doc.text(':', template.layout.margins.left + labelWidth, currentY);
+        doc.text(eskul.pembimbing, template.layout.margins.left + labelWidth + 3, currentY);
+        currentY += 5;
+
+        doc.text('Periode', template.layout.margins.left, currentY);
+        doc.text(':', template.layout.margins.left + labelWidth, currentY);
+        doc.text(`${monthName} ${selectedYear}`, template.layout.margins.left + labelWidth + 3, currentY);
+        currentY += 5;
+
+        doc.text('Total Pertemuan', template.layout.margins.left, currentY);
+        doc.text(':', template.layout.margins.left + labelWidth, currentY);
+        doc.text(`${uniqueDates.length} kali`, template.layout.margins.left + labelWidth + 3, currentY);
+        currentY += 8;
+
+        // Table
+        const tableData = monthData.map((row, index) => 
+          columns.map(col => col.key === 'no' ? index + 1 : (row[col.key] || '-'))
+        );
+
+        // Build column styles dynamically
+        const columnStyles: any = {
+          0: { halign: 'center', cellWidth: 10 }, // No
+          1: { halign: 'left' }, // NISN
+          2: { halign: 'left' }, // Nama Siswa
+          3: { halign: 'center' }, // Tingkat
+          4: { halign: 'center' }, // Kelas
+        };
+
+        // Set center alignment for all date columns
+        for (let i = 5; i < 5 + uniqueDates.length; i++) {
+          columnStyles[i] = { halign: 'center' };
+        }
+
+        // Set center alignment for H, S, I, A, Total, % columns (last 6 columns)
+        const lastColumnsStartIndex = 5 + uniqueDates.length;
+        for (let i = lastColumnsStartIndex; i < lastColumnsStartIndex + 6; i++) {
+          columnStyles[i] = { halign: 'center' };
+        }
+
+        autoTable(doc, {
+          startY: currentY,
+          head: [columns.map(col => col.label)],
+          body: tableData,
+          theme: 'grid',
+          styles: {
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [0, 0, 0],
+            lineWidth: 0.1,
+          },
+          headStyles: {
+            fillColor: template.styling.primaryColor,
+            textColor: [255, 255, 255],
+            fontStyle: 'bold',
+            halign: 'center',
+            lineColor: [0, 0, 0],
+            lineWidth: 0.1,
+          },
+          columnStyles,
+          didDrawPage: (data: any) => {
+            // Add legend below table
+            const legendY = (data as any).cursor.y + 5;
+            doc.setFontSize(9);
+            doc.setTextColor(0, 0, 0);
+            doc.text('Keterangan:', template.layout.margins.left, legendY);
+            doc.text('H = Hadir, S = Sakit, I = Izin, A = Alpha', template.layout.margins.left + 25, legendY);
+
+            // Add page numbers
+            const pageCount = doc.getNumberOfPages();
+            doc.setFontSize(10);
+            doc.setTextColor(100);
+            doc.text(
+              `Halaman ${doc.getCurrentPageInfo().pageNumber} dari ${pageCount}`,
+              pageWidth / 2,
+              doc.internal.pageSize.getHeight() - 10,
+              { align: 'center' }
+            );
+
+            // Add signature if it's the last page of this month's report
+            if (template.footer?.signatureSection && signatureDate) {
+              const finalY = legendY + 10;
+              const signatureX = pageWidth - template.layout.margins.right - 60;
+              
+              doc.setFontSize(10);
+              doc.setTextColor(0, 0, 0);
+              
+              const location = template.signatureLocation || 'Jakarta';
+              const dateStr = signatureDate.toLocaleDateString('id-ID', { 
+                day: 'numeric', 
+                month: 'long', 
+                year: 'numeric' 
+              });
+              
+              doc.text(`${location}, ${dateStr}`, signatureX, finalY);
+              doc.text('Pembimbing Ekstrakurikuler', signatureX, finalY + 5);
+              doc.text(eskul.pembimbing, signatureX, finalY + 25);
+            }
+          },
+        });
+      }
+
+      // Check if any months were actually exported
+      if (exportedMonths === 0) {
+        toast({
+          title: "Tidak ada data",
+          description: "Tidak ada data kehadiran untuk periode yang dipilih",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Save PDF
+      const fileName = `rekap_kehadiran_${eskul.nama_eskul.toLowerCase().replace(/\s+/g, '_')}_${monthOptions[sMonth].label.toLowerCase()}_${eMonth !== sMonth ? monthOptions[eMonth].label.toLowerCase() + '_' : ''}${selectedYear}.pdf`;
+      doc.save(fileName);
+
+      toast({
+        title: "Export Berhasil",
+        description: `Rekap kehadiran ${exportedMonths} bulan berhasil diekspor ke PDF${emptyMonths.length > 0 ? ` (${emptyMonths.length} bulan dilewati karena tidak ada data)` : ''}`,
+      });
+    } catch (error) {
+      console.error("Error exporting PDF:", error);
+      toast({
+        title: "Export Gagal",
+        description: "Terjadi kesalahan saat mengekspor PDF",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+      setIsExportDateDialogOpen(false);
+    }
+  };
+
+  if (!eskul) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Rekap Kehadiran Ekstrakurikuler"
+          description="Lihat dan cetak rekap kehadiran anggota ekstrakurikuler"
+        />
+        <Card className="p-6">
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              Silakan buat pengaturan ekstrakurikuler terlebih dahulu di menu "Kelola Ekstrakurikuler"
+            </AlertDescription>
+          </Alert>
+        </Card>
+      </div>
+    );
+  }
+
+  const totalStats = previewData.reduce(
+    (acc, curr) => ({
+      totalSiswa: acc.totalSiswa + 1,
+      totalHadir: acc.totalHadir + curr.hadir,
+      totalSakit: acc.totalSakit + curr.sakit,
+      totalIzin: acc.totalIzin + curr.izin,
+      totalAlpha: acc.totalAlpha + curr.alpha,
+    }),
+    { totalSiswa: 0, totalHadir: 0, totalSakit: 0, totalIzin: 0, totalAlpha: 0 }
+  );
+
+  const avgPersentase = previewData.length > 0 
+    ? Math.round(previewData.reduce((sum, curr) => sum + curr.persentase, 0) / previewData.length)
+    : 0;
+
+  const uniqueDates = previewData[0]?._dates || [];
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title={`Rekap Kehadiran - ${eskul.nama_eskul}`}
+        description={`Pembimbing: ${eskul.pembimbing}`}
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Filter Panel */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="h-5 w-5" />
+              Filter Periode
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>Tahun</Label>
+              <Select value={selectedYear} onValueChange={setSelectedYear}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih tahun" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableYears.map((year) => (
+                    <SelectItem key={year} value={year.toString()}>
+                      {year}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Bulan Awal</Label>
+              <Select value={startMonth} onValueChange={setStartMonth}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih bulan" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((month) => (
+                    <SelectItem key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Bulan Akhir</Label>
+              <Select value={endMonth} onValueChange={setEndMonth}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih bulan" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((month) => (
+                    <SelectItem key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {previewData.length > 0 && (
+              <div className="pt-4 border-t space-y-2">
+                <h4 className="font-medium text-sm">Export Laporan</h4>
+                <Button
+                  size="sm"
+                  className="w-full"
+                  onClick={handleExportClick}
+                  disabled={loading}
+                  variant="outline"
+                >
+                  <FileText className="mr-2 h-4 w-4" />
+                  Export PDF
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Report Content */}
+        <div className="lg:col-span-3 space-y-6">
+          {/* Summary Cards */}
+          {previewData.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <Card className="bg-card/40 backdrop-blur-md border-border/50">
+                <CardContent className="p-3">
+                  <p className="text-xs text-muted-foreground">Anggota</p>
+                  <p className="text-lg font-bold">{totalStats.totalSiswa}</p>
+                </CardContent>
+              </Card>
+              
+              <Card className="bg-card/40 backdrop-blur-md border-border/50">
+                <CardContent className="p-3">
+                  <p className="text-xs text-muted-foreground">Hadir</p>
+                  <p className="text-lg font-bold text-green-600">{totalStats.totalHadir}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/40 backdrop-blur-md border-border/50">
+                <CardContent className="p-3">
+                  <p className="text-xs text-muted-foreground">Sakit</p>
+                  <p className="text-lg font-bold text-yellow-600">{totalStats.totalSakit}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/40 backdrop-blur-md border-border/50">
+                <CardContent className="p-3">
+                  <p className="text-xs text-muted-foreground">Izin</p>
+                  <p className="text-lg font-bold text-blue-600">{totalStats.totalIzin}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/40 backdrop-blur-md border-border/50">
+                <CardContent className="p-3">
+                  <p className="text-xs text-muted-foreground">Alpha</p>
+                  <p className="text-lg font-bold text-red-600">{totalStats.totalAlpha}</p>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Main Report Table */}
+          <Card className="bg-card/40 backdrop-blur-md border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Daftar Kehadiran</CardTitle>
+                {previewData.length > 0 && (
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="text-muted-foreground">
+                      {startMonth === endMonth 
+                        ? `${monthOptions[parseInt(startMonth)].label} ${selectedYear}`
+                        : `${monthOptions[parseInt(startMonth)].label} - ${monthOptions[parseInt(endMonth)].label} ${selectedYear}`
+                      }
+                    </span>
+                    <span className="text-muted-foreground">•</span>
+                    <span className="font-semibold">{uniqueDates.length} Pertemuan</span>
+                    <span className="text-muted-foreground">•</span>
+                    <span className="font-semibold">{avgPersentase}% Kehadiran</span>
+                  </div>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {previewData.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  Tidak ada data kehadiran untuk periode yang dipilih
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="w-12 h-9">No</TableHead>
+                        <TableHead className="h-9">NISN</TableHead>
+                        <TableHead className="h-9">Nama Siswa</TableHead>
+                        <TableHead className="text-center h-9">Kelas</TableHead>
+                        {uniqueDates.map((date: string) => (
+                          <TableHead key={date} className="text-center min-w-[50px] h-9">
+                            {formatDate(date)}
+                          </TableHead>
+                        ))}
+                        <TableHead className="text-center h-9">%</TableHead>
+                        <TableHead className="text-center h-9">Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {previewData.map((student, index) => (
+                        <TableRow key={student.nisn} className="hover:bg-muted/50">
+                          <TableCell className="font-medium py-2">{index + 1}</TableCell>
+                          <TableCell className="font-medium py-2">{student.nisn}</TableCell>
+                          <TableCell className="py-2">{student.nama_siswa}</TableCell>
+                          <TableCell className="text-center py-2">{student.tingkat} {student.nama_kelas}</TableCell>
+                          {uniqueDates.map((date: string) => (
+                            <TableCell key={date} className="text-center py-2">
+                              {getStatusSymbol(student[date])}
+                            </TableCell>
+                          ))}
+                          <TableCell className="text-center font-semibold py-2">
+                            {student.persentase}%
+                          </TableCell>
+                          <TableCell className="text-center py-2">
+                            {getStatusBadge(student.persentase)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  
+                  {uniqueDates.length > 0 && (
+                    <div className="mt-4 p-3 bg-muted/30 rounded-lg">
+                      <div className="flex flex-wrap gap-4 text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center w-6 h-6 bg-green-100 text-green-800 rounded-full text-xs font-bold">H</span>
+                          <span>Hadir</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center w-6 h-6 bg-yellow-100 text-yellow-800 rounded-full text-xs font-bold">S</span>
+                          <span>Sakit</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-800 rounded-full text-xs font-bold">I</span>
+                          <span>Izin</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center w-6 h-6 bg-red-100 text-red-800 rounded-full text-xs font-bold">A</span>
+                          <span>Alpha</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center w-6 h-6 bg-gray-100 text-gray-500 rounded-full text-xs">-</span>
+                          <span>Tidak ada data</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+
+      <AlertDialog open={showEmptyMonthsDialog} onOpenChange={setShowEmptyMonthsDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Peringatan Data Kosong</AlertDialogTitle>
+            <AlertDialogDescription>
+              Bulan berikut tidak memiliki data kehadiran dan akan dilewati dalam laporan:
+              <ul className="list-disc list-inside mt-2 font-semibold">
+                {emptyMonths.map((month, index) => (
+                  <li key={index}>{month}</li>
+                ))}
+              </ul>
+              <p className="mt-2">Apakah Anda tetap ingin melanjutkan export?</p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Batal</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmExport}>
+              Lanjutkan Export
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <ExportDateDialog
+        open={isExportDateDialogOpen}
+        onOpenChange={setIsExportDateDialogOpen}
+        onExport={handleExportPDF}
+      />
+    </div>
+  );
+};
+
+export default RekapKehadiranEskul;

@@ -1,0 +1,951 @@
+import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/common/PageHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { CalendarDays, CheckCircle2, Plus, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { indexedDB } from "../../lib/indexedDB";
+import { syncTableFromIndexedDB } from "../../lib/syncIndexedDBToSupabase";
+import {
+  getActiveSemester,
+  getActiveTahunAjaran,
+  setActiveSemester as setActiveAcademicSemester,
+} from "@/lib/academicYearUtils";
+import { getWorkdaySettings, getWorkdays, initializeWorkdaySettings, saveWorkdaySettings } from "@/lib/workdaySettings";
+
+// Extend Window interface for Supabase sync flag
+declare global {
+  interface Window {
+    supabaseSyncComplete?: boolean;
+  }
+}
+
+type TimeSlot = {
+  id: string;
+  jam_ke: number;
+  waktu_mulai: string;
+  waktu_selesai: string;
+  is_break?: boolean;
+  break_label?: string;
+};
+
+type Schedule = {
+  id: string;
+  hari: string;
+  jam_ke: number;
+  kelas_id: string;
+  kelas_nama: string;
+  mata_pelajaran_id: string;
+  mata_pelajaran_nama: string;
+  jumlah_jp: number;
+};
+
+type Kelas = {
+  id: string;
+  nama_kelas: string;
+};
+
+type MataPelajaran = {
+  id: string;
+  nama_mata_pelajaran: string;
+};
+
+export default function JadwalPelajaran() {
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
+  const [kelasList, setKelasList] = useState<Kelas[]>([]);
+  const [mataPelajaranList, setMataPelajaranList] = useState<MataPelajaran[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [activeTahunAjaran, setActiveTahunAjaran] = useState("");
+  const [activeSemester, setActiveSemester] = useState<number>(1);
+  const [calendarActiveSemester, setCalendarActiveSemester] = useState<number>(1);
+  const [workdays, setWorkdays] = useState<string[]>([]);
+  const [includeSaturday, setIncludeSaturday] = useState(false);
+
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showTimeSettingsDialog, setShowTimeSettingsDialog] = useState(false);
+  const [showBreakSettingsDialog, setShowBreakSettingsDialog] = useState(false);
+  const [showConflictDialog, setShowConflictDialog] = useState(false);
+  const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+  const [showWorkdaySettingsDialog, setShowWorkdaySettingsDialog] = useState(false);
+  const [conflictingSchedules, setConflictingSchedules] = useState<Schedule[]>([]);
+  const [pendingSchedule, setPendingSchedule] = useState<any>(null);
+  const [minutesPerJP, setMinutesPerJP] = useState(45);
+
+  // Break settings
+  const [break1Start, setBreak1Start] = useState("09:30");
+  const [break1End, setBreak1End] = useState("09:45");
+  const [break2Start, setBreak2Start] = useState("12:00");
+  const [break2End, setBreak2End] = useState("12:30");
+
+  const [selectedDay, setSelectedDay] = useState("");
+  const [selectedJamKe, setSelectedJamKe] = useState("");
+  const [selectedKelas, setSelectedKelas] = useState("");
+  const [selectedMataPelajaran, setSelectedMataPelajaran] = useState("");
+  const [jumlahJP, setJumlahJP] = useState(1);
+
+  useEffect(() => {
+    if (dataLoaded) return;
+
+    const initData = async () => {
+      const year = await getActiveTahunAjaran();
+      const semester = await getActiveSemester();
+      setActiveTahunAjaran(year);
+      setActiveSemester(semester);
+      setCalendarActiveSemester(semester);
+      await fetchData(year, semester);
+      setDataLoaded(true);
+    };
+
+    const loadSettings = async () => {
+      await initializeWorkdaySettings();
+      const settings = await getWorkdaySettings();
+      setIncludeSaturday(settings.includeSaturday);
+      setWorkdays(getWorkdays());
+    };
+
+      const handleSyncComplete = async () => {
+        await Promise.all([initData(), loadSettings()]);
+      };
+
+    if (window.supabaseSyncComplete) {
+      handleSyncComplete();
+    } else {
+      window.addEventListener("supabase-sync-complete", handleSyncComplete, { once: true });
+    }
+
+    return () => {
+      window.removeEventListener("supabase-sync-complete", handleSyncComplete);
+    };
+  }, [dataLoaded]);
+
+  const fetchData = async (year?: string, semester?: number) => {
+    const timeoutId = setTimeout(() => {
+      setLoading(false);
+      toast.error("Gagal memuat data - timeout");
+    }, 5000);
+
+    try {
+      const currentYear = year || activeTahunAjaran || (await getActiveTahunAjaran());
+      const currentSemester = semester ?? activeSemester ?? (await getActiveSemester());
+
+      // Fetch schedules - filter by tahun_ajaran AND semester
+      const schedulesData = await indexedDB.select(
+        "jadwal_pelajaran",
+        (jadwal: any) => jadwal.tahun_ajaran === currentYear && Number(jadwal.semester) === currentSemester,
+      );
+
+      // Fetch time slots or create default ones
+      let timeSlotsData = await indexedDB.select("jam_pelajaran");
+      if (timeSlotsData.length === 0) {
+        timeSlotsData = await createDefaultTimeSlots();
+      } else {
+        // Check if we need to add jam 9-12 (for existing databases)
+        const hasJam9 = timeSlotsData.some((slot: TimeSlot) => slot.jam_ke === 9);
+        if (!hasJam9) {
+          const additionalSlots: TimeSlot[] = [
+            { id: "9", jam_ke: 9, waktu_mulai: "13:15", waktu_selesai: "14:00" },
+            { id: "10", jam_ke: 10, waktu_mulai: "14:00", waktu_selesai: "14:45" },
+            { id: "11", jam_ke: 11, waktu_mulai: "14:45", waktu_selesai: "15:30" },
+            { id: "12", jam_ke: 12, waktu_mulai: "15:30", waktu_selesai: "16:15" },
+          ];
+          for (const slot of additionalSlots) {
+            await indexedDB.insert("jam_pelajaran", slot);
+          }
+          timeSlotsData = await indexedDB.select("jam_pelajaran");
+        }
+      }
+
+      // Fetch kelas - filter by tahun_ajaran
+      const kelasData = await indexedDB.select("kelas", (kelas: any) => kelas.tahun_ajaran === currentYear);
+
+      // Fetch mata pelajaran
+      const mataPelajaranData = await indexedDB.select("mata_pelajaran");
+
+      // Get settings
+      const settings = await indexedDB.select("pengaturan");
+      const jpSetting = settings.find((s: any) => s.key === "minutes_per_jp");
+      if (jpSetting) {
+        setMinutesPerJP(Number(jpSetting.value));
+      }
+
+      // Get break times from settings
+      const break1StartSetting = settings.find((s: any) => s.key === "break1_start");
+      const break1EndSetting = settings.find((s: any) => s.key === "break1_end");
+      const break2StartSetting = settings.find((s: any) => s.key === "break2_start");
+      const break2EndSetting = settings.find((s: any) => s.key === "break2_end");
+
+      if (break1StartSetting) setBreak1Start(break1StartSetting.value);
+      if (break1EndSetting) setBreak1End(break1EndSetting.value);
+      if (break2StartSetting) setBreak2Start(break2StartSetting.value);
+      if (break2EndSetting) setBreak2End(break2EndSetting.value);
+
+      // Add break slots to time slots
+      const allSlots = [...timeSlotsData];
+
+      if (break1StartSetting && break1EndSetting) {
+        allSlots.push({
+          id: "break1",
+          jam_ke: 4.5, // Between jam 4 and 5
+          waktu_mulai: break1StartSetting.value,
+          waktu_selesai: break1EndSetting.value,
+          is_break: true,
+          break_label: "Istirahat 1",
+        });
+      }
+
+      if (break2StartSetting && break2EndSetting) {
+        allSlots.push({
+          id: "break2",
+          jam_ke: 7.5, // Between jam 7 and 8
+          waktu_mulai: break2StartSetting.value,
+          waktu_selesai: break2EndSetting.value,
+          is_break: true,
+          break_label: "Istirahat 2",
+        });
+      }
+
+      // Enrich schedules with names
+      const enrichedSchedules = schedulesData.map((schedule: any) => {
+        const kelas = kelasData.find((k: any) => k.id === schedule.kelas_id);
+        const mataPelajaran = mataPelajaranData.find((mp: any) => mp.id === schedule.mata_pelajaran_id);
+        return {
+          ...schedule,
+          kelas_nama: kelas?.nama_kelas || "-",
+          mata_pelajaran_nama: mataPelajaran?.nama_mata_pelajaran || "-",
+        };
+      });
+
+      setSchedules(enrichedSchedules);
+      setTimeSlots(allSlots);
+      setKelasList(kelasData);
+      setMataPelajaranList(mataPelajaranData);
+    } catch (error) {
+      console.error("Error fetching data:", error);
+      toast.error("Gagal memuat data");
+    } finally {
+      clearTimeout(timeoutId);
+      setLoading(false);
+    }
+  };
+
+  const createDefaultTimeSlots = async () => {
+    const defaultSlots: TimeSlot[] = [
+      { id: "1", jam_ke: 1, waktu_mulai: "06:30", waktu_selesai: "07:15" },
+      { id: "2", jam_ke: 2, waktu_mulai: "07:15", waktu_selesai: "08:00" },
+      { id: "3", jam_ke: 3, waktu_mulai: "08:00", waktu_selesai: "08:45" },
+      { id: "4", jam_ke: 4, waktu_mulai: "08:45", waktu_selesai: "09:30" },
+      { id: "5", jam_ke: 5, waktu_mulai: "09:45", waktu_selesai: "10:30" },
+      { id: "6", jam_ke: 6, waktu_mulai: "10:30", waktu_selesai: "11:15" },
+      { id: "7", jam_ke: 7, waktu_mulai: "11:15", waktu_selesai: "12:00" },
+      { id: "8", jam_ke: 8, waktu_mulai: "12:30", waktu_selesai: "13:15" },
+      { id: "9", jam_ke: 9, waktu_mulai: "13:15", waktu_selesai: "14:00" },
+      { id: "10", jam_ke: 10, waktu_mulai: "14:00", waktu_selesai: "14:45" },
+      { id: "11", jam_ke: 11, waktu_mulai: "14:45", waktu_selesai: "15:30" },
+      { id: "12", jam_ke: 12, waktu_mulai: "15:30", waktu_selesai: "16:15" },
+    ];
+
+    for (const slot of defaultSlots) {
+      await indexedDB.insert("jam_pelajaran", slot);
+    }
+
+    return defaultSlots;
+  };
+
+  const handleAddSchedule = async () => {
+    if (!selectedDay || !selectedJamKe || !selectedKelas || !selectedMataPelajaran) {
+      toast.error("Semua field harus diisi");
+      return;
+    }
+
+    const startJam = Number(selectedJamKe);
+    const endJam = startJam + jumlahJP;
+
+    const conflicts = schedules.filter((schedule) => {
+      if (schedule.hari !== selectedDay) return false;
+      const existingStart = schedule.jam_ke;
+      const existingEnd = schedule.jam_ke + schedule.jumlah_jp;
+      return startJam < existingEnd && endJam > existingStart;
+    });
+
+    const year = activeTahunAjaran || (await getActiveTahunAjaran());
+    const semester = activeSemester || (await getActiveSemester());
+
+    const newSchedule = {
+      hari: selectedDay,
+      jam_ke: Number(selectedJamKe),
+      kelas_id: selectedKelas,
+      mata_pelajaran_id: selectedMataPelajaran,
+      jumlah_jp: jumlahJP,
+      semester,
+      tahun_ajaran: year,
+    };
+
+    if (conflicts.length > 0) {
+      setConflictingSchedules(conflicts);
+      setPendingSchedule(newSchedule);
+      setShowConflictDialog(true);
+      return;
+    }
+
+    await saveSchedule(newSchedule, []);
+  };
+
+  const saveSchedule = async (scheduleData?: any, conflictsToDelete?: Schedule[]) => {
+    try {
+      const scheduleToSave = scheduleData || pendingSchedule;
+      const conflicts = conflictsToDelete ?? conflictingSchedules;
+
+      if (conflicts.length > 0) {
+        for (const conflict of conflicts) {
+          await indexedDB.delete("jadwal_pelajaran", conflict.id);
+        }
+      }
+
+      await indexedDB.insert("jadwal_pelajaran", scheduleToSave);
+      await syncTableFromIndexedDB("jadwal_pelajaran");
+
+      toast.success(
+        conflicts.length > 0
+          ? `Jadwal berhasil ditambahkan (${conflicts.length} jadwal lama dihapus)`
+          : "Jadwal berhasil ditambahkan",
+      );
+
+      setShowAddDialog(false);
+      setShowConflictDialog(false);
+      setConflictingSchedules([]);
+      setPendingSchedule(null);
+      resetForm();
+      fetchData(scheduleToSave.tahun_ajaran, scheduleToSave.semester);
+    } catch (error) {
+      console.error("Error adding schedule:", error);
+      toast.error("Gagal menambahkan jadwal");
+    }
+  };
+
+  const handleDeleteAllSchedules = async () => {
+    try {
+      const schedulesToDelete = schedules.map((s) => s.id);
+
+      for (const id of schedulesToDelete) {
+        await indexedDB.delete("jadwal_pelajaran", id);
+      }
+
+      await syncTableFromIndexedDB("jadwal_pelajaran");
+      toast.success(`${schedulesToDelete.length} jadwal berhasil dihapus`);
+
+      setShowDeleteAllDialog(false);
+      fetchData();
+    } catch (error) {
+      console.error("Error deleting all schedules:", error);
+      toast.error("Gagal menghapus jadwal");
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    try {
+      await indexedDB.delete("jadwal_pelajaran", id);
+      await syncTableFromIndexedDB("jadwal_pelajaran");
+      toast.success("Jadwal berhasil dihapus");
+      fetchData();
+    } catch (error) {
+      console.error("Error deleting schedule:", error);
+      toast.error("Gagal menghapus jadwal");
+    }
+  };
+
+  const handleSaveTimeSettings = async () => {
+    try {
+      await indexedDB.insert("pengaturan", {
+        key: "minutes_per_jp",
+        value: minutesPerJP.toString(),
+      });
+
+      toast.success("Pengaturan waktu berhasil disimpan");
+      setShowTimeSettingsDialog(false);
+    } catch (error) {
+      console.error("Error saving settings:", error);
+      toast.error("Gagal menyimpan pengaturan");
+    }
+  };
+
+  const handleSaveBreakSettings = async () => {
+    try {
+      await indexedDB.insert("pengaturan", { key: "break1_start", value: break1Start });
+      await indexedDB.insert("pengaturan", { key: "break1_end", value: break1End });
+      await indexedDB.insert("pengaturan", { key: "break2_start", value: break2Start });
+      await indexedDB.insert("pengaturan", { key: "break2_end", value: break2End });
+
+      toast.success("Pengaturan jam istirahat berhasil disimpan");
+      setShowBreakSettingsDialog(false);
+      fetchData();
+    } catch (error) {
+      console.error("Error saving break settings:", error);
+      toast.error("Gagal menyimpan pengaturan jam istirahat");
+    }
+  };
+
+  const resetForm = () => {
+    setSelectedDay("");
+    setSelectedJamKe("");
+    setSelectedKelas("");
+    setSelectedMataPelajaran("");
+    setJumlahJP(1);
+  };
+
+  const getScheduleForDayAndTime = (day: string, jamKe: number) => {
+    const occupyingSchedule = schedules.find((s) => {
+      if (s.hari !== day) return false;
+      return s.jam_ke <= jamKe && jamKe < s.jam_ke + s.jumlah_jp;
+    });
+
+    if (occupyingSchedule) {
+      if (occupyingSchedule.jam_ke === jamKe) {
+        return [occupyingSchedule];
+      }
+
+      return [
+        {
+          ...occupyingSchedule,
+          isContinuation: true,
+          continuationNumber: jamKe - occupyingSchedule.jam_ke + 1,
+        },
+      ];
+    }
+
+    return [];
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Jadwal Pelajaran"
+        description={`Kelola jadwal mengajar per semester - Tahun Ajaran ${activeTahunAjaran}`}
+      />
+
+      <Card>
+        <CardContent className="pt-6">
+          <div className="mb-6 flex gap-4 items-end">
+            <div className="flex-1 max-w-xs space-y-2">
+              <Label className="block">Semester</Label>
+              <Select
+                value={activeSemester.toString()}
+                onValueChange={async (value) => {
+                  const sem = Number(value);
+                  setActiveSemester(sem);
+                  await fetchData(activeTahunAjaran, sem);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih semester" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">
+                    <div className="flex items-center justify-between w-full gap-3">
+                      <span>Semester 1</span>
+                      {calendarActiveSemester === 1 && (
+                        <Badge className="text-xs ml-auto bg-green-500 hover:bg-green-600 text-white">
+                          Aktif
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="2">
+                    <div className="flex items-center justify-between w-full gap-3">
+                      <span>Semester 2</span>
+                      {calendarActiveSemester === 2 && (
+                        <Badge className="text-xs ml-auto bg-green-500 hover:bg-green-600 text-white">
+                          Aktif
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                try {
+                  await setActiveAcademicSemester(activeSemester);
+                  setCalendarActiveSemester(activeSemester);
+                  toast.success(`Semester ${activeSemester} berhasil diaktifkan untuk kalender`);
+                } catch (error) {
+                  toast.error("Gagal mengaktifkan semester");
+                }
+              }}
+            >
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+              Aktifkan Semester
+            </Button>
+          </div>
+
+          <div className="flex gap-2 mb-6">
+            <Button onClick={() => setShowAddDialog(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Tambah Jadwal
+            </Button>
+            <Button variant="outline" onClick={() => setShowWorkdaySettingsDialog(true)}>
+              <CalendarDays className="mr-2 h-4 w-4" />
+              Hari Kerja ({includeSaturday ? "6" : "5"} hari)
+            </Button>
+            <Button variant="outline" onClick={() => setShowTimeSettingsDialog(true)}>
+              <SettingsIcon className="mr-2 h-4 w-4" />
+              Pengaturan Waktu ({minutesPerJP} menit/JP)
+            </Button>
+            <Button variant="outline" onClick={() => setShowBreakSettingsDialog(true)}>
+              <SettingsIcon className="mr-2 h-4 w-4" />
+              Jam Istirahat
+            </Button>
+            {schedules.length > 0 && (
+              <Button onClick={() => setShowDeleteAllDialog(true)} variant="destructive">
+                <Trash2 className="h-4 w-4 mr-2" />
+                Hapus Semua
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Jadwal Mengajar</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-32">Jam</TableHead>
+                  {workdays.map((day) => (
+                    <TableHead key={day} className="min-w-[200px]">
+                      {day}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {timeSlots
+                  .sort((a, b) => a.jam_ke - b.jam_ke)
+                  .map((slot) => (
+                    <TableRow key={slot.id}>
+                      <TableCell className="font-medium">
+                        {slot.is_break ? (
+                          <>
+                            <div className="font-semibold text-orange-600">{slot.break_label}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {slot.waktu_mulai} - {slot.waktu_selesai}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div>Jam ke-{slot.jam_ke}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {slot.waktu_mulai} - {slot.waktu_selesai}
+                            </div>
+                          </>
+                        )}
+                      </TableCell>
+                      {workdays.map((day) => {
+                        if (slot.is_break) {
+                          return (
+                            <TableCell key={day} className="bg-orange-50 dark:bg-orange-950/20">
+                              <div className="text-center text-sm text-muted-foreground">Istirahat</div>
+                            </TableCell>
+                          );
+                        }
+
+                        const daySchedules = getScheduleForDayAndTime(day, slot.jam_ke);
+                        return (
+                          <TableCell key={day}>
+                            <div className="space-y-2">
+                              {daySchedules.map((schedule: any) => (
+                                <div
+                                  key={schedule.id}
+                                  className={`p-2 rounded border text-sm ${
+                                    schedule.isContinuation
+                                      ? "bg-primary/5 border-primary/10"
+                                      : "bg-primary/10 border-primary/20"
+                                  }`}
+                                >
+                                  <div className="font-medium">{schedule.kelas_nama}</div>
+                                  <div className="text-xs">{schedule.mata_pelajaran_nama}</div>
+                                  {schedule.isContinuation ? (
+                                    <div className="text-xs text-muted-foreground italic">
+                                      (Lanjutan - JP {schedule.continuationNumber}/{schedule.jumlah_jp})
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-muted-foreground">{schedule.jumlah_jp} JP</div>
+                                  )}
+                                  {!schedule.isContinuation && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="mt-1 h-6 w-full"
+                                      onClick={() => handleDeleteSchedule(schedule.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Add Schedule Dialog */}
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tambah Jadwal</DialogTitle>
+            <DialogDescription>Tambahkan jadwal mengajar baru</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label>Hari</Label>
+              <Select value={selectedDay} onValueChange={setSelectedDay}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih hari" />
+                </SelectTrigger>
+                <SelectContent>
+                  {workdays.map((day) => (
+                    <SelectItem key={day} value={day}>
+                      {day}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label>Jam Ke</Label>
+              <Select value={selectedJamKe} onValueChange={setSelectedJamKe}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih jam" />
+                </SelectTrigger>
+                <SelectContent>
+                  {timeSlots
+                    .filter((slot) => !slot.is_break && slot.jam_ke != null)
+                    .map((slot) => (
+                      <SelectItem key={slot.id} value={slot.jam_ke.toString()}>
+                        Jam ke-{slot.jam_ke} ({slot.waktu_mulai} - {slot.waktu_selesai})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label>Kelas</Label>
+              <Select value={selectedKelas} onValueChange={setSelectedKelas}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih kelas" />
+                </SelectTrigger>
+                <SelectContent>
+                  {kelasList.map((kelas) => (
+                    <SelectItem key={kelas.id} value={kelas.id}>
+                      {kelas.nama_kelas}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label>Mata Pelajaran</Label>
+              <Select value={selectedMataPelajaran} onValueChange={setSelectedMataPelajaran}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih mata pelajaran" />
+                </SelectTrigger>
+                <SelectContent>
+                  {mataPelajaranList.map((mp) => (
+                    <SelectItem key={mp.id} value={mp.id}>
+                      {mp.nama_mata_pelajaran}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label>Jumlah JP</Label>
+              <Input
+                type="number"
+                min="1"
+                value={jumlahJP}
+                onChange={(e) => setJumlahJP(Number(e.target.value))}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddDialog(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleAddSchedule}>Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete All Confirmation Dialog */}
+      <Dialog open={showDeleteAllDialog} onOpenChange={setShowDeleteAllDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Konfirmasi Hapus Semua Jadwal</DialogTitle>
+            <DialogDescription>
+              Anda akan menghapus semua jadwal untuk Semester {activeSemester}, Tahun Ajaran {activeTahunAjaran}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-lg">
+            <p className="text-sm font-medium text-destructive mb-2">
+              ⚠️ Peringatan: Tindakan ini tidak dapat dibatalkan!
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Total {schedules.length} jadwal akan dihapus secara permanen.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteAllDialog(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleDeleteAllSchedules} variant="destructive">
+              Ya, Hapus Semua
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Conflict Confirmation Dialog */}
+      <Dialog
+        open={showConflictDialog}
+        onOpenChange={(open) => {
+          setShowConflictDialog(open);
+          if (!open) {
+            setPendingSchedule(null);
+            setConflictingSchedules([]);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Konfirmasi Jadwal Bentrok</DialogTitle>
+            <DialogDescription>
+              Jadwal baru akan menimpa jadwal yang sudah ada. Yakin ingin melanjutkan?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="p-3 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+              <p className="text-sm font-medium mb-2">Jadwal yang akan dihapus:</p>
+              {conflictingSchedules.map((schedule, idx) => (
+                <div key={idx} className="text-sm text-muted-foreground mb-1">
+                  • {schedule.kelas_nama} - Jam {schedule.jam_ke}
+                  {schedule.jumlah_jp > 1 && `-${schedule.jam_ke + schedule.jumlah_jp - 1}`} -
+                  {" "}
+                  {schedule.mata_pelajaran_nama} ({schedule.jumlah_jp} JP)
+                </div>
+              ))}
+            </div>
+
+            <div className="p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+              <p className="text-sm font-medium mb-2">Jadwal baru:</p>
+              <div className="text-sm text-muted-foreground">
+                • {kelasList.find((k) => k.id === selectedKelas)?.nama_kelas} - Jam {selectedJamKe}
+                {jumlahJP > 1 && `-${Number(selectedJamKe) + jumlahJP - 1}`} -
+                {" "}
+                {mataPelajaranList.find((mp) => mp.id === selectedMataPelajaran)?.nama_mata_pelajaran} (
+                {jumlahJP} JP)
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowConflictDialog(false);
+                setPendingSchedule(null);
+                setConflictingSchedules([]);
+              }}
+            >
+              Batal
+            </Button>
+            <Button onClick={() => saveSchedule()} variant="destructive">
+              Ya, Timpa Jadwal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Time Settings Dialog */}
+      <Dialog open={showTimeSettingsDialog} onOpenChange={setShowTimeSettingsDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pengaturan Waktu</DialogTitle>
+            <DialogDescription>Sesuaikan durasi per jam pelajaran</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label>Menit per JP</Label>
+              <Input
+                type="number"
+                min="15"
+                max="60"
+                value={minutesPerJP}
+                onChange={(e) => setMinutesPerJP(Number(e.target.value))}
+              />
+              <p className="text-xs text-muted-foreground mt-1">Durasi setiap jam pelajaran dalam menit (15-60 menit)</p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTimeSettingsDialog(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleSaveTimeSettings}>Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Break Settings Dialog */}
+      <Dialog open={showBreakSettingsDialog} onOpenChange={setShowBreakSettingsDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pengaturan Jam Istirahat</DialogTitle>
+            <DialogDescription>Atur waktu istirahat (2 sesi)</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-3 p-3 border rounded-lg">
+              <h4 className="font-medium text-sm">Istirahat Sesi 1</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Mulai</Label>
+                  <Input type="time" value={break1Start} onChange={(e) => setBreak1Start(e.target.value)} />
+                </div>
+                <div>
+                  <Label>Selesai</Label>
+                  <Input type="time" value={break1End} onChange={(e) => setBreak1End(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 p-3 border rounded-lg">
+              <h4 className="font-medium text-sm">Istirahat Sesi 2</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Mulai</Label>
+                  <Input type="time" value={break2Start} onChange={(e) => setBreak2Start(e.target.value)} />
+                </div>
+                <div>
+                  <Label>Selesai</Label>
+                  <Input type="time" value={break2End} onChange={(e) => setBreak2End(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">Jam istirahat akan ditampilkan di tabel jadwal mengajar</p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBreakSettingsDialog(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleSaveBreakSettings}>Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Workday Settings Dialog */}
+      <Dialog open={showWorkdaySettingsDialog} onOpenChange={setShowWorkdaySettingsDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pengaturan Hari Kerja</DialogTitle>
+            <DialogDescription>
+              Atur apakah hari Sabtu termasuk hari kerja. Pengaturan ini akan mempengaruhi jadwal pelajaran, jurnal guru,
+              dan kalender.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4">
+            <div className="flex items-center justify-between space-x-2">
+              <div className="space-y-0.5">
+                <Label htmlFor="saturday-workday" className="text-base">
+                  Sabtu sebagai Hari Kerja
+                </Label>
+                <p className="text-sm text-muted-foreground">Aktifkan untuk sistem 6 hari kerja (termasuk Sabtu)</p>
+              </div>
+              <Switch
+                id="saturday-workday"
+                checked={includeSaturday}
+                onCheckedChange={async (checked) => {
+                  setIncludeSaturday(checked);
+                  await saveWorkdaySettings({ includeSaturday: checked });
+                  setWorkdays(getWorkdays());
+                  toast.success(
+                    checked ? "Sabtu diaktifkan sebagai hari kerja (6 hari)" : "Sabtu dinonaktifkan sebagai hari kerja (5 hari)",
+                  );
+                }}
+              />
+            </div>
+
+            <div className="rounded-lg border p-4 bg-muted/50">
+              <h4 className="text-sm font-medium mb-2">Hari Kerja Aktif:</h4>
+              <div className="flex flex-wrap gap-2">
+                {getWorkdays().map((day) => (
+                  <Badge key={day} variant="secondary">
+                    {day}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button onClick={() => setShowWorkdaySettingsDialog(false)}>Tutup</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

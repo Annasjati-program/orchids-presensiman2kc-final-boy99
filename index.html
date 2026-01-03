@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="EduShift" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <title>EduShift Panel - Sistem Manajemen Pendidikan</title>
+    <meta name="description" content="Sistem Manajemen Pendidikan untuk Guru dan Siswa" />
+    <meta name="author" content="EduShift" />
+
+    <meta property="og:title" content="edushift-panel" />
+    <meta property="og:description" content="Lovable Generated Project" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@lovable_dev" />
+    <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+    <script>
+      // Dev-only: aggressively unregister old service workers to prevent cached /src/* imports
+      (function () {
+        if (!('serviceWorker' in navigator)) return;
+        const isDevHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.port === '3000' || location.hostname.includes('3000-');
+        if (!isDevHost) return;
+        const FLAG = 'sw-dev-preclean';
+        if (sessionStorage.getItem(FLAG)) return;
+        sessionStorage.setItem(FLAG, 'true');
+        navigator.serviceWorker.getRegistrations()
+          .then((registrations) => Promise.all(registrations.map((reg) => reg.unregister())))
+          .then(() => ('caches' in window ? caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))) : null))
+          .then(() => {
+            if (navigator.serviceWorker.controller) {
+              location.reload();
+            }
+          })
+          .catch((err) => console.warn('SW dev pre-clean failed', err));
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script
+        src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/scripts//route-messenger-vite.js"
+       data-target-origin="*"
+        data-message-type="ROUTE_CHANGE"
+        data-include-search-params="true"
+        data-only-in-iframe="true"
+        data-debug="true"
+        data-custom-data='{"appName": "YourApp", "version": "1.0.0", "greeting": "hi"}'
+        defer
+    ></script>
+  </body>
+</html>

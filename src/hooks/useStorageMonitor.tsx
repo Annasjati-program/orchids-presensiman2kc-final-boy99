@@ -1,0 +1,337 @@
+import { useState, useEffect } from 'react';
+import { indexedDB } from '@/lib/indexedDB';
+import { dataMigration } from '@/lib/migrationUtils';
+import { isWhitelisted, getStorageDescription } from '@/lib/storageConfig';
+import { supabase } from '@/lib/supabase';
+
+export interface StorageInfo {
+  total: number;
+  used: number;
+  available: number;
+  percentage: number;
+}
+
+export interface TableSize {
+  name: string;
+  size: number;
+  count: number;
+}
+
+export interface LocalStorageItem {
+  key: string;
+  size: number;
+  value?: string;
+  description?: string;
+  isWhitelisted?: boolean;
+}
+
+export interface MigrationStatus {
+  needsMigration: boolean;
+  pendingTables: { table: string; recordCount: number }[];
+  totalRecords: number;
+}
+
+export interface StorageData {
+  total: StorageInfo;
+  indexedDB: {
+    size: number;
+    tables: TableSize[];
+  };
+  localStorage: {
+    size: number;
+    items: LocalStorageItem[];
+  };
+  opfs: {
+    size: number;
+    supported: boolean;
+  };
+  cache: {
+    size: number;
+    supported: boolean;
+    caches: { name: string; size: number }[];
+  };
+  memory: {
+    jsHeapSize: number;
+    jsHeapSizeLimit: number;
+    totalJSHeapSize: number;
+  };
+  supabase: {
+    size: number;
+    tables: TableSize[];
+    connected: boolean;
+  };
+  migration?: MigrationStatus;
+}
+
+export const useStorageMonitor = () => {
+  const [storageData, setStorageData] = useState<StorageData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const getTableDescription = (tableName: string): string => {
+    const descriptions: Record<string, string> = {
+      // IndexedDB tables
+      'nilai_siswa': 'Data nilai siswa per mata pelajaran',
+      'jenis_penilaian': 'Kategori penilaian (UH, UTS, UAS, dll)',
+      'catatan_kalender': 'Catatan & reminder di kalender',
+      'hari_libur': 'Data hari libur nasional',
+      'agenda_mengajar': 'Agenda mengajar guru',
+      'ekstrakurikuler': 'Data ekstrakurikuler',
+      'anggota_eskul': 'Data anggota ekstrakurikuler',
+      'kehadiran_eskul': 'Data kehadiran ekstrakurikuler',
+      'nilai_eskul': 'Data nilai ekstrakurikuler',
+      // localStorage tables
+      'localdb_users': 'Data pengguna aplikasi',
+      'localdb_guru': 'Data guru/pengajar',
+      'localdb_mata_pelajaran': 'Data mata pelajaran',
+      'localdb_kelas': 'Data kelas',
+      'localdb_siswa': 'Data siswa',
+      'localdb_jenis_kegiatan': 'Jenis kegiatan jurnal guru',
+      'localdb_jurnal': 'Jurnal kegiatan harian guru',
+      'localdb_kehadiran': 'Data presensi/kehadiran siswa',
+      'localdb_jadwal_pelajaran': 'Jadwal pelajaran per kelas',
+      'localdb_jam_pelajaran': 'Waktu jam pelajaran',
+      'localdb_pengaturan': 'Pengaturan aplikasi',
+      'pdfTemplate': 'Template format PDF laporan',
+      'currentUser': 'Data user yang sedang login',
+      'notificationSettings': 'Pengaturan notifikasi',
+      'lastGoogleBackup': 'Info backup terakhir ke Google Drive',
+      'googleDriveSettings': 'Pengaturan Google Drive',
+    };
+    return descriptions[tableName] || '';
+  };
+
+  const getMigrationStatus = async (): Promise<MigrationStatus | undefined> => {
+    try {
+      // Check if migration is already completed
+      const migrationCompleted = localStorage.getItem('migrationCompleted');
+      if (migrationCompleted) {
+        return undefined;
+      }
+
+      // Check session storage first (from main.tsx)
+      const sessionData = sessionStorage.getItem('migrationData');
+      if (sessionData) {
+        return JSON.parse(sessionData);
+      }
+
+      // Otherwise check directly
+      return await dataMigration.getMigrationStatus();
+    } catch (error) {
+      console.error('Error getting migration status:', error);
+      return undefined;
+    }
+  };
+
+  const getSupabaseSize = async (): Promise<{ size: number; tables: TableSize[]; connected: boolean }> => {
+    try {
+      const { data, error } = await supabase.rpc('get_table_sizes');
+      
+      if (error) throw error;
+      
+      if (!data || data.length === 0) {
+        return { size: 0, tables: [], connected: true };
+      }
+      
+      const tables: TableSize[] = data.map((row: any) => ({
+        name: row.table_name,
+        size: parseInt(row.total_size) || 0,
+        count: parseInt(row.row_count) || 0,
+      }));
+      
+      const totalSize = tables.reduce((sum, table) => sum + table.size, 0);
+      
+      return { size: totalSize, tables, connected: true };
+    } catch (error) {
+      console.warn('Supabase size calculation error:', error);
+      return { size: 0, tables: [], connected: false };
+    }
+  };
+
+  const calculateStorageUsage = async (): Promise<StorageData> => {
+    const estimate = await navigator.storage.estimate();
+
+    // Calculate IndexedDB size
+    let indexedDBSize = 0;
+    const tableSizes: TableSize[] = [];
+    
+    try {
+      const tables = await indexedDB.exportAll();
+      
+      for (const [tableName, records] of Object.entries(tables)) {
+        const size = new Blob([JSON.stringify(records)]).size;
+        indexedDBSize += size;
+        tableSizes.push({
+          name: tableName,
+          size,
+          count: Array.isArray(records) ? records.length : 0,
+        });
+      }
+    } catch (error) {
+      console.error('Error calculating IndexedDB size:', error);
+    }
+
+    // Calculate localStorage size
+    let localStorageSize = 0;
+    const items: LocalStorageItem[] = [];
+    
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          const value = localStorage.getItem(key) || '';
+          const size = new Blob([value]).size;
+          items.push({
+            key,
+            size,
+            description: getStorageDescription(key),
+            isWhitelisted: isWhitelisted(key),
+          });
+          localStorageSize += size;
+        }
+      }
+    } catch (error) {
+      console.error('Error calculating localStorage size:', error);
+    }
+
+    // Calculate OPFS size
+    let opfsSize = 0;
+    let opfsSupported = false;
+    
+    try {
+      if ('storage' in navigator && 'getDirectory' in navigator.storage) {
+        opfsSupported = true;
+        // Import opfsStorage dynamically to calculate size
+        const { opfsStorage } = await import('@/lib/opfsStorage');
+        opfsSize = await opfsStorage.calculateTotalSize();
+      }
+    } catch (error) {
+      console.warn('OPFS calculation error:', error);
+    }
+
+    // Calculate Cache Storage size
+    let cacheSize = 0;
+    let cacheSupported = false;
+    const cacheList: { name: string; size: number }[] = [];
+    
+    try {
+      if ('caches' in window) {
+        cacheSupported = true;
+        const cacheNames = await caches.keys();
+        
+        for (const cacheName of cacheNames) {
+          const cache = await caches.open(cacheName);
+          const requests = await cache.keys();
+          let cacheSizeForName = 0;
+          
+          for (const request of requests) {
+            const response = await cache.match(request);
+            if (response) {
+              const blob = await response.blob();
+              cacheSizeForName += blob.size;
+            }
+          }
+          
+          cacheSize += cacheSizeForName;
+          cacheList.push({ name: cacheName, size: cacheSizeForName });
+        }
+      }
+    } catch (error) {
+      console.warn('Cache calculation error:', error);
+    }
+
+    // Get memory information
+    let memoryInfo = {
+      jsHeapSize: 0,
+      jsHeapSizeLimit: 0,
+      totalJSHeapSize: 0,
+    };
+    
+    try {
+      // Check if performance.memory exists (non-standard, Chrome only)
+      const perf = performance as any;
+      if (perf.memory) {
+        memoryInfo = {
+          jsHeapSize: perf.memory.usedJSHeapSize || 0,
+          jsHeapSizeLimit: perf.memory.jsHeapSizeLimit || 0,
+          totalJSHeapSize: perf.memory.totalJSHeapSize || 0,
+        };
+      }
+    } catch (error) {
+      console.warn('Memory info error:', error);
+    }
+
+    // Get Supabase storage info
+    const supabaseInfo = await getSupabaseSize();
+
+    // Get migration status
+    const migrationStatus = await getMigrationStatus();
+
+    // Calculate actual total from storage types (excluding cache and memory)
+    const calculatedTotal = indexedDBSize + localStorageSize + opfsSize;
+
+    return {
+      total: {
+        total: estimate.quota || 0,
+        used: calculatedTotal,
+        available: (estimate.quota || 0) - calculatedTotal,
+        percentage: estimate.quota ? (calculatedTotal / estimate.quota) * 100 : 0,
+      },
+      indexedDB: {
+        size: indexedDBSize,
+        tables: tableSizes,
+      },
+      localStorage: {
+        size: localStorageSize,
+        items,
+      },
+      opfs: {
+        size: opfsSize,
+        supported: opfsSupported,
+      },
+      cache: {
+        size: cacheSize,
+        supported: cacheSupported,
+        caches: cacheList,
+      },
+      memory: memoryInfo,
+      supabase: supabaseInfo,
+      migration: migrationStatus,
+    };
+  };
+
+  const refreshStorageData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const data = await calculateStorageUsage();
+      setStorageData(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to calculate storage usage');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshStorageData();
+  }, []);
+
+  return {
+    storageData,
+    loading,
+    error,
+    refresh: refreshStorageData
+  };
+};
+
+export const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 Bytes';
+  
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+};
